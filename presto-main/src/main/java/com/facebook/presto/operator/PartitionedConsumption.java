@@ -18,7 +18,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
-import io.airlift.log.Logger;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
@@ -42,16 +41,19 @@ import static java.util.Objects.requireNonNull;
 @ThreadSafe
 public final class PartitionedConsumption<T>
 {
-    private static final Logger log = Logger.get(PartitionedConsumption.class);
-
     private final int consumersCount;
     private final AtomicInteger consumed = new AtomicInteger();
     @Nullable
     private List<Partition<T>> partitions;
 
-    public PartitionedConsumption(int consumersCount, Iterable<Integer> partitionNumbers, IntFunction<ListenableFuture<T>> loader, IntConsumer disposer)
+    public PartitionedConsumption(
+            int consumersCount,
+            Iterable<Integer> partitionNumbers,
+            IntFunction<ListenableFuture<T>> loader,
+            IntConsumer disposer,
+            IntFunction<SettableFuture<?>> disposed)
     {
-        this(consumersCount, immediateFuture(null), partitionNumbers, loader, disposer);
+        this(consumersCount, immediateFuture(null), partitionNumbers, loader, disposer, disposed);
     }
 
     public PartitionedConsumption(
@@ -59,18 +61,20 @@ public final class PartitionedConsumption<T>
             ListenableFuture<?> activator,
             Iterable<Integer> partitionNumbers,
             IntFunction<ListenableFuture<T>> loader,
-            IntConsumer disposer)
+            IntConsumer disposer,
+            IntFunction<SettableFuture<?>> disposed)
     {
         checkArgument(consumersCount > 0, "consumersCount must be positive");
         this.consumersCount = consumersCount;
-        this.partitions = createPartitions(activator, partitionNumbers, loader, disposer);
+        this.partitions = createPartitions(activator, partitionNumbers, loader, disposer, disposed);
     }
 
     private List<Partition<T>> createPartitions(
             ListenableFuture<?> activator,
             Iterable<Integer> partitionNumbers,
             IntFunction<ListenableFuture<T>> loader,
-            IntConsumer disposer)
+            IntConsumer disposer,
+            IntFunction<SettableFuture<?>> disposed)
     {
         requireNonNull(partitionNumbers, "partitionNumbers is null");
         requireNonNull(loader, "loader is null");
@@ -81,7 +85,7 @@ public final class PartitionedConsumption<T>
         for (Integer partitionNumber : partitionNumbers) {
             Partition<T> partition = new Partition<>(consumersCount, partitionNumber, loader, partitionActivator, disposer);
             partitions.add(partition);
-            partitionActivator = partition.released;
+            partitionActivator = disposed.apply(partitionNumber);
         }
         return partitions.build();
     }
@@ -135,7 +139,8 @@ public final class PartitionedConsumption<T>
             this.requested = SettableFuture.create();
             this.loaded = Futures.transformAsync(
                     allAsList(requested, previousReleased),
-                    ignored -> loader.apply(partitionNumber));
+                    ignored -> loader.apply(partitionNumber),
+                    directExecutor());
             this.released = SettableFuture.create();
             released.addListener(() -> disposer.accept(partitionNumber), directExecutor());
             this.pendingReleases = consumersCount;
@@ -154,7 +159,6 @@ public final class PartitionedConsumption<T>
 
         public synchronized void release()
         {
-            checkState(loaded.isDone());
             pendingReleases--;
             checkState(pendingReleases >= 0);
             if (pendingReleases == 0) {

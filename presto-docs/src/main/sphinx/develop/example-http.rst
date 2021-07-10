@@ -65,10 +65,9 @@ and exception handling:
     // A plugin is not required to use Guice; it is just very convenient
     Bootstrap app = new Bootstrap(
             new JsonModule(),
-            new ExampleModule(connectorId));
+            new ExampleModule(catalogName));
 
     Injector injector = app
-            .strictConfig()
             .doNotInitializeLogging()
             .setRequiredConfigurationProperties(requiredConfig)
             .initialize();

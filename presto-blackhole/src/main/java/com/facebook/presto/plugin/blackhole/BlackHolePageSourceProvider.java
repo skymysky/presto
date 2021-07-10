@@ -13,19 +13,20 @@
  */
 package com.facebook.presto.plugin.blackhole;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.FixedWidthType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplit;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
+import com.facebook.presto.spi.SplitContext;
 import com.facebook.presto.spi.connector.ConnectorPageSourceProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.type.FixedWidthType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.ListeningScheduledExecutorService;
@@ -35,20 +36,19 @@ import io.airlift.slice.Slices;
 import java.util.Arrays;
 import java.util.List;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.Decimals.encodeScaledValue;
-import static com.facebook.presto.spi.type.Decimals.isLongDecimal;
-import static com.facebook.presto.spi.type.Decimals.isShortDecimal;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.Varchars.isVarcharType;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.Decimals.encodeScaledValue;
+import static com.facebook.presto.common.type.Decimals.isLongDecimal;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.Varchars.isVarcharType;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.math.BigDecimal.ZERO;
 import static java.util.Objects.requireNonNull;
@@ -68,7 +68,8 @@ public final class BlackHolePageSourceProvider
             ConnectorTransactionHandle transactionHandle,
             ConnectorSession session,
             ConnectorSplit split,
-            List<ColumnHandle> columns)
+            List<ColumnHandle> columns,
+            SplitContext splitContext)
     {
         BlackHoleSplit blackHoleSplit = (BlackHoleSplit) split;
 
@@ -115,10 +116,10 @@ public final class BlackHolePageSourceProvider
 
         BlockBuilder builder;
         if (type instanceof FixedWidthType) {
-            builder = type.createBlockBuilder(new BlockBuilderStatus(), rowsCount);
+            builder = type.createBlockBuilder(null, rowsCount);
         }
         else {
-            builder = type.createBlockBuilder(new BlockBuilderStatus(), rowsCount, slice.length());
+            builder = type.createBlockBuilder(null, rowsCount, slice.length());
         }
 
         for (int i = 0; i < rowsCount; i++) {
@@ -146,6 +147,6 @@ public final class BlackHolePageSourceProvider
     private boolean isSupportedType(Type type)
     {
         return ImmutableSet.<Type>of(TINYINT, SMALLINT, INTEGER, BIGINT, REAL, DOUBLE, BOOLEAN, DATE, TIMESTAMP, VARBINARY).contains(type)
-                || isVarcharType(type) || isLongDecimal(type) || isShortDecimal(type);
+                || isVarcharType(type) || type instanceof DecimalType;
     }
 }

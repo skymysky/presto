@@ -13,17 +13,17 @@
  */
 package com.facebook.presto.cassandra;
 
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.cassandra.util.CassandraCqlUtils;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.Range;
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorTableHandle;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.Range;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import io.airlift.log.Logger;
 
 import javax.inject.Inject;
 
@@ -114,22 +114,18 @@ public class CassandraPartitionManager
             return ImmutableList.of();
         }
 
-        Set<List<Object>> partitionKeysSet = getPartitionKeysSet(table, tupleDomain);
+        List<Set<Object>> partitionKeysList = getPartitionKeysList(table, tupleDomain);
 
-        // empty filter means, all partitions
-        if (partitionKeysSet.isEmpty()) {
+        Set<List<Object>> filterList = Sets.cartesianProduct(partitionKeysList);
+        // empty filters means, all partitions
+        if (filterList.isEmpty()) {
             return cassandraSession.getPartitions(table, ImmutableList.of());
         }
 
-        ImmutableList.Builder<CassandraPartition> partitions = ImmutableList.builder();
-        for (List<Object> partitionKeys : partitionKeysSet) {
-            partitions.addAll(cassandraSession.getPartitions(table, partitionKeys));
-        }
-
-        return partitions.build();
+        return cassandraSession.getPartitions(table, partitionKeysList);
     }
 
-    private static Set<List<Object>> getPartitionKeysSet(CassandraTable table, TupleDomain<ColumnHandle> tupleDomain)
+    private static List<Set<Object>> getPartitionKeysList(CassandraTable table, TupleDomain<ColumnHandle> tupleDomain)
     {
         ImmutableList.Builder<Set<Object>> partitionColumnValues = ImmutableList.builder();
         for (CassandraColumnHandle columnHandle : table.getPartitionKeyColumns()) {
@@ -137,12 +133,12 @@ public class CassandraPartitionManager
 
             // if there is no constraint on a partition key, return an empty set
             if (domain == null) {
-                return ImmutableSet.of();
+                return ImmutableList.of();
             }
 
             // todo does cassandra allow null partition keys?
             if (domain.isNullAllowed()) {
-                return ImmutableSet.of();
+                return ImmutableList.of();
             }
 
             Set<Object> values = domain.getValues().getValuesProcessor().transform(
@@ -156,7 +152,9 @@ public class CassandraPartitionManager
                             Object value = range.getSingleValue();
 
                             CassandraType valueType = columnHandle.getCassandraType();
-                            columnValues.add(valueType.validatePartitionKey(value));
+                            if (valueType.isSupportedPartitionKey()) {
+                                columnValues.add(value);
+                            }
                         }
                         return columnValues.build();
                     },
@@ -169,6 +167,6 @@ public class CassandraPartitionManager
                     allOrNone -> ImmutableSet.of());
             partitionColumnValues.add(values);
         }
-        return Sets.cartesianProduct(partitionColumnValues.build());
+        return partitionColumnValues.build();
     }
 }

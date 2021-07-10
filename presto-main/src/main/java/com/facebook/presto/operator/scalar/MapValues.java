@@ -13,14 +13,13 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlType;
 import com.facebook.presto.spi.function.TypeParameter;
-import com.facebook.presto.spi.type.Type;
 
 @ScalarFunction("map_values")
 @Description("Returns the values of the given map(K,V) as an array")
@@ -35,7 +34,7 @@ public final class MapValues
             @TypeParameter("V") Type valueType,
             @SqlType("map(K,V)") Block block)
     {
-        BlockBuilder blockBuilder = valueType.createBlockBuilder(new BlockBuilderStatus(), block.getPositionCount() / 2);
+        BlockBuilder blockBuilder = valueType.createBlockBuilder(null, block.getPositionCount() / 2);
         for (int i = 0; i < block.getPositionCount(); i += 2) {
             valueType.appendTo(block, i + 1, blockBuilder);
         }

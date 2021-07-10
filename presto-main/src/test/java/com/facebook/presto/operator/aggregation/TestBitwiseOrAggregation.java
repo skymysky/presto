@@ -13,10 +13,9 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.StandardTypes;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.StandardTypes;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
 
@@ -24,7 +23,7 @@ import java.util.List;
 import java.util.stream.LongStream;
 
 import static com.facebook.presto.block.BlockAssertions.createLongsBlock;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 
 public class TestBitwiseOrAggregation
         extends AbstractTestAggregationFunction
@@ -32,7 +31,7 @@ public class TestBitwiseOrAggregation
     @Override
     public Block[] getSequenceBlocks(int start, int length)
     {
-        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(new BlockBuilderStatus(), length);
+        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, length);
 
         for (int i = start; i < start + length; i++) {
             BIGINT.writeLong(blockBuilder, i);

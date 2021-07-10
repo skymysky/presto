@@ -15,6 +15,7 @@ package com.facebook.presto.operator;
 
 import com.facebook.presto.operator.LookupJoinOperators.JoinType;
 
+import java.util.Optional;
 import java.util.function.Supplier;
 
 import static com.facebook.presto.operator.JoinOperatorInfo.createJoinOperatorInfo;
@@ -35,8 +36,10 @@ public class JoinStatisticsCounter
     //      [2*bucket + 1]  total count of rows that were produces by probe rows in this bucket.
     private final long[] logHistogramCounters = new long[HISTOGRAM_BUCKETS * 2];
 
-    /** Estimated number of positions in on the build side */
-    private long lookupSourcePositions = -1;
+    /**
+     * Estimated number of positions in on the build side
+     */
+    private Optional<Long> lookupSourcePositions = Optional.empty();
 
     public JoinStatisticsCounter(JoinType joinType)
     {
@@ -45,10 +48,7 @@ public class JoinStatisticsCounter
 
     public void updateLookupSourcePositions(long lookupSourcePositionsDelta)
     {
-        if (this.lookupSourcePositions == -1) {
-            this.lookupSourcePositions = 0;
-        }
-        this.lookupSourcePositions += lookupSourcePositionsDelta;
+        this.lookupSourcePositions = Optional.of(this.lookupSourcePositions.orElse(0L) + lookupSourcePositionsDelta);
     }
 
     public void recordProbe(int numSourcePositions)

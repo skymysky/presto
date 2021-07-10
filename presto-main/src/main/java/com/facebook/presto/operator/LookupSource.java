@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
 
 import javax.annotation.concurrent.NotThreadSafe;
 
@@ -41,6 +41,8 @@ public interface LookupSource
     void appendTo(long position, PageBuilder pageBuilder, int outputChannelOffset);
 
     boolean isJoinPositionEligible(long currentJoinPosition, int probePosition, Page allProbeChannelsPage);
+
+    boolean isEmpty();
 
     @Override
     void close();

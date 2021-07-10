@@ -13,14 +13,15 @@
  */
 package com.facebook.presto.operator.annotations;
 
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.metadata.BoundVariables;
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 
+import java.util.Objects;
+
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.metadata.SignatureBinder.applyBoundVariables;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
 import static java.util.Objects.requireNonNull;
 
 public final class TypeImplementationDependency
@@ -34,8 +35,28 @@ public final class TypeImplementationDependency
     }
 
     @Override
-    public Type resolve(BoundVariables boundVariables, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public Type resolve(BoundVariables boundVariables, FunctionAndTypeManager functionAndTypeManager)
     {
-        return typeManager.getType(applyBoundVariables(signature, boundVariables));
+        return applyBoundVariables(functionAndTypeManager, signature, boundVariables);
+    }
+
+    @Override
+    public boolean equals(Object o)
+    {
+        if (this == o) {
+            return true;
+        }
+
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        TypeImplementationDependency that = (TypeImplementationDependency) o;
+        return Objects.equals(signature, that.signature);
+    }
+
+    @Override
+    public int hashCode()
+    {
+        return Objects.hash(signature);
     }
 }

@@ -13,9 +13,8 @@
  */
 package com.facebook.presto.server;
 
-import com.facebook.presto.execution.buffer.SerializedPage;
-import com.facebook.presto.spi.Page;
-import com.google.common.base.Throwables;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.google.common.reflect.TypeToken;
 import io.airlift.slice.OutputStreamSliceOutput;
 import io.airlift.slice.SliceOutput;
@@ -36,7 +35,7 @@ import java.lang.reflect.Type;
 import java.util.List;
 
 import static com.facebook.presto.PrestoMediaTypes.PRESTO_PAGES;
-import static com.facebook.presto.execution.buffer.PagesSerdeUtil.writeSerializedPages;
+import static com.facebook.presto.spi.page.PagesSerdeUtil.writeSerializedPages;
 
 @Provider
 @Produces(PRESTO_PAGES)
@@ -51,7 +50,7 @@ public class PagesResponseWriter
             LIST_GENERIC_TOKEN = List.class.getMethod("get", int.class).getGenericReturnType();
         }
         catch (NoSuchMethodException e) {
-            throw Throwables.propagate(e);
+            throw new RuntimeException(e);
         }
     }
 

@@ -13,28 +13,34 @@
  */
 package com.facebook.presto.server;
 
-import com.facebook.presto.OutputBuffers.OutputBufferId;
+import com.facebook.airlift.concurrent.BoundedExecutor;
+import com.facebook.airlift.json.Codec;
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.airlift.json.smile.SmileCodec;
+import com.facebook.airlift.stats.TimeStat;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.Page;
 import com.facebook.presto.execution.TaskId;
 import com.facebook.presto.execution.TaskInfo;
 import com.facebook.presto.execution.TaskManager;
 import com.facebook.presto.execution.TaskState;
 import com.facebook.presto.execution.TaskStatus;
 import com.facebook.presto.execution.buffer.BufferResult;
-import com.facebook.presto.execution.buffer.SerializedPage;
+import com.facebook.presto.execution.buffer.OutputBuffers.OutputBufferId;
+import com.facebook.presto.metadata.MetadataUpdates;
 import com.facebook.presto.metadata.SessionPropertyManager;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.page.SerializedPage;
+import com.facebook.presto.sql.planner.PlanFragment;
 import com.google.common.collect.ImmutableList;
 import com.google.common.reflect.TypeToken;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import io.airlift.concurrent.BoundedExecutor;
-import io.airlift.stats.TimeStat;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
 
+import javax.annotation.security.RolesAllowed;
 import javax.inject.Inject;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
@@ -51,7 +57,6 @@ import javax.ws.rs.container.CompletionCallback;
 import javax.ws.rs.container.Suspended;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.GenericEntity;
-import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
 import javax.ws.rs.core.UriInfo;
@@ -59,8 +64,13 @@ import javax.ws.rs.core.UriInfo;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadLocalRandom;
 
+import static com.facebook.airlift.concurrent.MoreFutures.addTimeout;
+import static com.facebook.airlift.http.client.thrift.ThriftRequestUtils.APPLICATION_THRIFT_BINARY;
+import static com.facebook.airlift.http.client.thrift.ThriftRequestUtils.APPLICATION_THRIFT_COMPACT;
+import static com.facebook.airlift.http.client.thrift.ThriftRequestUtils.APPLICATION_THRIFT_FB_COMPACT;
+import static com.facebook.airlift.http.server.AsyncResponseHandler.bindAsyncResponse;
+import static com.facebook.presto.PrestoMediaTypes.APPLICATION_JACKSON_SMILE;
 import static com.facebook.presto.PrestoMediaTypes.PRESTO_PAGES;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_BUFFER_COMPLETE;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_CURRENT_STATE;
@@ -69,22 +79,24 @@ import static com.facebook.presto.client.PrestoHeaders.PRESTO_MAX_WAIT;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_PAGE_NEXT_TOKEN;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_PAGE_TOKEN;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_TASK_INSTANCE_ID;
+import static com.facebook.presto.server.security.RoleType.INTERNAL;
+import static com.facebook.presto.util.TaskUtils.DEFAULT_MAX_WAIT_TIME;
+import static com.facebook.presto.util.TaskUtils.randomizeWaitTime;
 import static com.google.common.collect.Iterables.transform;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
-import static io.airlift.concurrent.MoreFutures.addTimeout;
-import static io.airlift.http.server.AsyncResponseHandler.bindAsyncResponse;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 
 /**
  * Manages tasks on this worker node
  */
 @Path("/v1/task")
+@RolesAllowed(INTERNAL)
 public class TaskResource
 {
     private static final Duration ADDITIONAL_WAIT_TIME = new Duration(5, SECONDS);
-    private static final Duration DEFAULT_MAX_WAIT_TIME = new Duration(2, SECONDS);
 
     private final TaskManager taskManager;
     private final SessionPropertyManager sessionPropertyManager;
@@ -92,21 +104,28 @@ public class TaskResource
     private final ScheduledExecutorService timeoutExecutor;
     private final TimeStat readFromOutputBufferTime = new TimeStat();
     private final TimeStat resultsRequestTime = new TimeStat();
+    private final Codec<PlanFragment> planFragmentCodec;
 
     @Inject
-    public TaskResource(TaskManager taskManager,
+    public TaskResource(
+            TaskManager taskManager,
             SessionPropertyManager sessionPropertyManager,
-            @ForAsyncHttp BoundedExecutor responseExecutor,
-            @ForAsyncHttp ScheduledExecutorService timeoutExecutor)
+            @ForAsyncRpc BoundedExecutor responseExecutor,
+            @ForAsyncRpc ScheduledExecutorService timeoutExecutor,
+            JsonCodec<PlanFragment> planFragmentJsonCodec,
+            SmileCodec<PlanFragment> planFragmentSmileCodec,
+            InternalCommunicationConfig communicationConfig)
     {
         this.taskManager = requireNonNull(taskManager, "taskManager is null");
         this.sessionPropertyManager = requireNonNull(sessionPropertyManager, "sessionPropertyManager is null");
         this.responseExecutor = requireNonNull(responseExecutor, "responseExecutor is null");
         this.timeoutExecutor = requireNonNull(timeoutExecutor, "timeoutExecutor is null");
+        this.planFragmentCodec = planFragmentJsonCodec;
     }
 
     @GET
-    @Produces(MediaType.APPLICATION_JSON)
+    @Consumes({APPLICATION_JSON, APPLICATION_JACKSON_SMILE})
+    @Produces({APPLICATION_JSON, APPLICATION_JACKSON_SMILE})
     public List<TaskInfo> getAllTaskInfo(@Context UriInfo uriInfo)
     {
         List<TaskInfo> allTaskInfo = taskManager.getAllTaskInfo();
@@ -118,18 +137,19 @@ public class TaskResource
 
     @POST
     @Path("{taskId}")
-    @Consumes(MediaType.APPLICATION_JSON)
-    @Produces(MediaType.APPLICATION_JSON)
+    @Consumes({APPLICATION_JSON, APPLICATION_JACKSON_SMILE})
+    @Produces({APPLICATION_JSON, APPLICATION_JACKSON_SMILE})
     public Response createOrUpdateTask(@PathParam("taskId") TaskId taskId, TaskUpdateRequest taskUpdateRequest, @Context UriInfo uriInfo)
     {
         requireNonNull(taskUpdateRequest, "taskUpdateRequest is null");
 
-        Session session = taskUpdateRequest.getSession().toSession(sessionPropertyManager);
+        Session session = taskUpdateRequest.getSession().toSession(sessionPropertyManager, taskUpdateRequest.getExtraCredentials());
         TaskInfo taskInfo = taskManager.updateTask(session,
                 taskId,
-                taskUpdateRequest.getFragment(),
+                taskUpdateRequest.getFragment().map(planFragmentCodec::fromBytes),
                 taskUpdateRequest.getSources(),
-                taskUpdateRequest.getOutputIds());
+                taskUpdateRequest.getOutputIds(),
+                taskUpdateRequest.getTableWriteInfo());
 
         if (shouldSummarize(uriInfo)) {
             taskInfo = taskInfo.summarize();
@@ -140,8 +160,10 @@ public class TaskResource
 
     @GET
     @Path("{taskId}")
-    @Produces(MediaType.APPLICATION_JSON)
-    public void getTaskInfo(@PathParam("taskId") final TaskId taskId,
+    @Consumes({APPLICATION_JSON, APPLICATION_JACKSON_SMILE})
+    @Produces({APPLICATION_JSON, APPLICATION_JACKSON_SMILE})
+    public void getTaskInfo(
+            @PathParam("taskId") final TaskId taskId,
             @HeaderParam(PRESTO_CURRENT_STATE) TaskState currentState,
             @HeaderParam(PRESTO_MAX_WAIT) Duration maxWait,
             @Context UriInfo uriInfo,
@@ -166,7 +188,7 @@ public class TaskResource
                 timeoutExecutor);
 
         if (shouldSummarize(uriInfo)) {
-            futureTaskInfo = Futures.transform(futureTaskInfo, TaskInfo::summarize);
+            futureTaskInfo = Futures.transform(futureTaskInfo, TaskInfo::summarize, directExecutor());
         }
 
         // For hard timeout, add an additional time to max wait for thread scheduling contention and GC
@@ -177,8 +199,10 @@ public class TaskResource
 
     @GET
     @Path("{taskId}/status")
-    @Produces(MediaType.APPLICATION_JSON)
-    public void getTaskStatus(@PathParam("taskId") TaskId taskId,
+    @Consumes({APPLICATION_JSON, APPLICATION_JACKSON_SMILE, APPLICATION_THRIFT_BINARY, APPLICATION_THRIFT_COMPACT, APPLICATION_THRIFT_FB_COMPACT})
+    @Produces({APPLICATION_JSON, APPLICATION_JACKSON_SMILE, APPLICATION_THRIFT_BINARY, APPLICATION_THRIFT_COMPACT, APPLICATION_THRIFT_FB_COMPACT})
+    public void getTaskStatus(
+            @PathParam("taskId") TaskId taskId,
             @HeaderParam(PRESTO_CURRENT_STATE) TaskState currentState,
             @HeaderParam(PRESTO_MAX_WAIT) Duration maxWait,
             @Context UriInfo uriInfo,
@@ -193,6 +217,9 @@ public class TaskResource
         }
 
         Duration waitTime = randomizeWaitTime(maxWait);
+        // TODO: With current implementation, a newly completed driver group won't trigger immediate HTTP response,
+        // leading to a slight delay of approx 1 second, which is not a major issue for any query that are heavy weight enough
+        // to justify group-by-group execution. In order to fix this, REST endpoint /v1/{task}/status will need change.
         ListenableFuture<TaskStatus> futureTaskStatus = addTimeout(
                 taskManager.getTaskStatus(taskId, currentState),
                 () -> taskManager.getTaskStatus(taskId),
@@ -205,10 +232,22 @@ public class TaskResource
                 .withTimeout(timeout);
     }
 
+    @POST
+    @Path("{taskId}/metadataresults")
+    @Consumes({APPLICATION_JSON, APPLICATION_JACKSON_SMILE})
+    public Response updateMetadataResults(@PathParam("taskId") TaskId taskId, MetadataUpdates metadataUpdates, @Context UriInfo uriInfo)
+    {
+        requireNonNull(metadataUpdates, "metadataUpdates is null");
+        taskManager.updateMetadataResults(taskId, metadataUpdates);
+        return Response.ok().build();
+    }
+
     @DELETE
     @Path("{taskId}")
-    @Produces(MediaType.APPLICATION_JSON)
-    public TaskInfo deleteTask(@PathParam("taskId") TaskId taskId,
+    @Consumes({APPLICATION_JSON, APPLICATION_JACKSON_SMILE})
+    @Produces({APPLICATION_JSON, APPLICATION_JACKSON_SMILE})
+    public TaskInfo deleteTask(
+            @PathParam("taskId") TaskId taskId,
             @QueryParam("abort") @DefaultValue("true") boolean abort,
             @Context UriInfo uriInfo)
     {
@@ -231,12 +270,12 @@ public class TaskResource
     @GET
     @Path("{taskId}/results/{bufferId}/{token}")
     @Produces(PRESTO_PAGES)
-    public void getResults(@PathParam("taskId") TaskId taskId,
+    public void getResults(
+            @PathParam("taskId") TaskId taskId,
             @PathParam("bufferId") OutputBufferId bufferId,
             @PathParam("token") final long token,
             @HeaderParam(PRESTO_MAX_SIZE) DataSize maxSize,
             @Suspended AsyncResponse asyncResponse)
-            throws InterruptedException
     {
         requireNonNull(taskId, "taskId is null");
         requireNonNull(bufferId, "bufferId is null");
@@ -270,7 +309,7 @@ public class TaskResource
                     .header(PRESTO_PAGE_NEXT_TOKEN, result.getNextToken())
                     .header(PRESTO_BUFFER_COMPLETE, result.isBufferComplete())
                     .build();
-        });
+        }, directExecutor());
 
         // For hard timeout, add an additional time to max wait for thread scheduling contention and GC
         Duration timeout = new Duration(waitTime.toMillis() + ADDITIONAL_WAIT_TIME.toMillis(), MILLISECONDS);
@@ -287,15 +326,38 @@ public class TaskResource
         asyncResponse.register((CompletionCallback) throwable -> resultsRequestTime.add(Duration.nanosSince(start)));
     }
 
+    @GET
+    @Path("{taskId}/results/{bufferId}/{token}/acknowledge")
+    public void acknowledgeResults(
+            @PathParam("taskId") TaskId taskId,
+            @PathParam("bufferId") OutputBufferId bufferId,
+            @PathParam("token") final long token)
+    {
+        requireNonNull(taskId, "taskId is null");
+        requireNonNull(bufferId, "bufferId is null");
+
+        taskManager.acknowledgeTaskResults(taskId, bufferId, token);
+    }
+
     @DELETE
     @Path("{taskId}/results/{bufferId}")
-    @Produces(MediaType.APPLICATION_JSON)
+    @Produces(APPLICATION_JSON)
     public void abortResults(@PathParam("taskId") TaskId taskId, @PathParam("bufferId") OutputBufferId bufferId, @Context UriInfo uriInfo)
     {
         requireNonNull(taskId, "taskId is null");
         requireNonNull(bufferId, "bufferId is null");
 
         taskManager.abortTaskResults(taskId, bufferId);
+    }
+
+    @DELETE
+    @Path("{taskId}/remote-source/{remoteSourceTaskId}")
+    public void removeRemoteSource(@PathParam("taskId") TaskId taskId, @PathParam("remoteSourceTaskId") TaskId remoteSourceTaskId)
+    {
+        requireNonNull(taskId, "taskId is null");
+        requireNonNull(remoteSourceTaskId, "remoteSourceTaskId is null");
+
+        taskManager.removeRemoteSource(taskId, remoteSourceTaskId);
     }
 
     @Managed
@@ -315,12 +377,5 @@ public class TaskResource
     private static boolean shouldSummarize(UriInfo uriInfo)
     {
         return uriInfo.getQueryParameters().containsKey("summarize");
-    }
-
-    private static Duration randomizeWaitTime(Duration waitTime)
-    {
-        // Randomize in [T/2, T], so wait is not near zero and the client-supplied max wait time is respected
-        long halfWaitMillis = waitTime.toMillis() / 2;
-        return new Duration(halfWaitMillis + ThreadLocalRandom.current().nextLong(halfWaitMillis), MILLISECONDS);
     }
 }

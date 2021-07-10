@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.spi;
 
+import com.facebook.drift.annotations.ThriftConstructor;
+import com.facebook.drift.annotations.ThriftField;
+import com.facebook.drift.annotations.ThriftStruct;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -20,17 +23,21 @@ import java.util.Objects;
 
 import static java.util.Objects.requireNonNull;
 
+@ThriftStruct
 public final class ErrorCode
 {
     private final int code;
     private final String name;
     private final ErrorType type;
+    private final boolean retriable;
 
     @JsonCreator
+    @ThriftConstructor
     public ErrorCode(
             @JsonProperty("code") int code,
             @JsonProperty("name") String name,
-            @JsonProperty("type") ErrorType type)
+            @JsonProperty("type") ErrorType type,
+            @JsonProperty("retriable") boolean retriable)
     {
         if (code < 0) {
             throw new IllegalArgumentException("code is negative");
@@ -38,24 +45,40 @@ public final class ErrorCode
         this.code = code;
         this.name = requireNonNull(name, "name is null");
         this.type = requireNonNull(type, "type is null");
+        this.retriable = retriable;
+    }
+
+    public ErrorCode(int code, String name, ErrorType type)
+    {
+        this(code, name, type, false);
     }
 
     @JsonProperty
+    @ThriftField(1)
     public int getCode()
     {
         return code;
     }
 
     @JsonProperty
+    @ThriftField(2)
     public String getName()
     {
         return name;
     }
 
     @JsonProperty
+    @ThriftField(3)
     public ErrorType getType()
     {
         return type;
+    }
+
+    @JsonProperty
+    @ThriftField(4)
+    public boolean isRetriable()
+    {
+        return retriable;
     }
 
     @Override

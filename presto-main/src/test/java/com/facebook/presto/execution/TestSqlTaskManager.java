@@ -13,28 +13,34 @@
  */
 package com.facebook.presto.execution;
 
-import com.facebook.presto.OutputBuffers.OutputBufferId;
-import com.facebook.presto.TaskSource;
-import com.facebook.presto.client.NodeVersion;
-import com.facebook.presto.event.query.QueryMonitor;
-import com.facebook.presto.event.query.QueryMonitorConfig;
-import com.facebook.presto.eventlistener.EventListenerManager;
+import com.facebook.airlift.node.NodeInfo;
+import com.facebook.airlift.stats.TestingGcMonitor;
+import com.facebook.presto.common.block.BlockEncodingManager;
 import com.facebook.presto.execution.buffer.BufferResult;
 import com.facebook.presto.execution.buffer.BufferState;
+import com.facebook.presto.execution.buffer.OutputBuffers;
+import com.facebook.presto.execution.buffer.OutputBuffers.OutputBufferId;
+import com.facebook.presto.execution.buffer.SpoolingOutputBufferFactory;
 import com.facebook.presto.execution.executor.TaskExecutor;
+import com.facebook.presto.execution.scheduler.TableWriteInfo;
 import com.facebook.presto.memory.LocalMemoryManager;
+import com.facebook.presto.memory.MemoryPoolAssignment;
+import com.facebook.presto.memory.MemoryPoolAssignmentsRequest;
 import com.facebook.presto.memory.NodeMemoryConfig;
-import com.facebook.presto.memory.ReservedSystemMemoryConfig;
+import com.facebook.presto.memory.context.LocalMemoryContext;
+import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.operator.ExchangeClient;
 import com.facebook.presto.operator.ExchangeClientSupplier;
-import com.facebook.presto.spi.Node;
+import com.facebook.presto.operator.NoOpFragmentResultCacheManager;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spiller.LocalSpillManager;
 import com.facebook.presto.spiller.NodeSpillConfig;
+import com.facebook.presto.sql.analyzer.FeaturesConfig;
+import com.facebook.presto.sql.gen.OrderingCompiler;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.base.Ticker;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.json.ObjectMapperProvider;
-import io.airlift.node.NodeInfo;
 import io.airlift.units.DataSize;
 import io.airlift.units.DataSize.Unit;
 import io.airlift.units.Duration;
@@ -45,14 +51,19 @@ import java.net.URI;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
-import static com.facebook.presto.OutputBuffers.BufferType.PARTITIONED;
-import static com.facebook.presto.OutputBuffers.createInitialEmptyOutputBuffers;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
+import static com.facebook.presto.execution.TaskManagerConfig.TaskPriorityTracking.TASK_FAIR;
 import static com.facebook.presto.execution.TaskTestUtils.PLAN_FRAGMENT;
 import static com.facebook.presto.execution.TaskTestUtils.SPLIT;
 import static com.facebook.presto.execution.TaskTestUtils.TABLE_SCAN_NODE_ID;
+import static com.facebook.presto.execution.TaskTestUtils.createTestSplitMonitor;
 import static com.facebook.presto.execution.TaskTestUtils.createTestingPlanner;
-import static io.airlift.json.JsonCodec.jsonCodec;
+import static com.facebook.presto.execution.buffer.OutputBuffers.BufferType.PARTITIONED;
+import static com.facebook.presto.execution.buffer.OutputBuffers.createInitialEmptyOutputBuffers;
+import static com.facebook.presto.memory.LocalMemoryManager.GENERAL_POOL;
+import static com.facebook.presto.memory.LocalMemoryManager.RESERVED_POOL;
+import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotEquals;
 import static org.testng.Assert.assertNotNull;
@@ -61,7 +72,7 @@ import static org.testng.Assert.assertNull;
 @Test
 public class TestSqlTaskManager
 {
-    private static final TaskId TASK_ID = new TaskId("query", 0, 1);
+    private static final TaskId TASK_ID = new TaskId("query", 0, 0, 1);
     public static final OutputBufferId OUT = new OutputBufferId(0);
 
     private final TaskExecutor taskExecutor;
@@ -71,16 +82,15 @@ public class TestSqlTaskManager
 
     public TestSqlTaskManager()
     {
-        localMemoryManager = new LocalMemoryManager(new NodeMemoryConfig(), new ReservedSystemMemoryConfig());
+        localMemoryManager = new LocalMemoryManager(new NodeMemoryConfig());
         localSpillManager = new LocalSpillManager(new NodeSpillConfig());
-        taskExecutor = new TaskExecutor(8, 16);
+        taskExecutor = new TaskExecutor(8, 16, 3, 4, TASK_FAIR, Ticker.systemTicker());
         taskExecutor.start();
         taskManagementExecutor = new TaskManagementExecutor();
     }
 
     @AfterClass(alwaysRun = true)
     public void tearDown()
-            throws Exception
     {
         taskExecutor.stop();
         taskManagementExecutor.close();
@@ -88,27 +98,16 @@ public class TestSqlTaskManager
 
     @Test
     public void testEmptyQuery()
-            throws Exception
     {
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = TASK_ID;
-            TaskInfo taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
-                    taskId,
-                    Optional.of(PLAN_FRAGMENT),
-                    ImmutableList.of(),
-                    createInitialEmptyOutputBuffers(PARTITIONED)
-                            .withNoMoreBufferIds());
+            TaskInfo taskInfo = createTask(sqlTaskManager, taskId, createInitialEmptyOutputBuffers(PARTITIONED).withNoMoreBufferIds());
             assertEquals(taskInfo.getTaskStatus().getState(), TaskState.RUNNING);
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
             assertEquals(taskInfo.getTaskStatus().getState(), TaskState.RUNNING);
 
-            taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
-                    taskId,
-                    Optional.of(PLAN_FRAGMENT),
-                    ImmutableList.of(new TaskSource(TABLE_SCAN_NODE_ID, ImmutableSet.of(), true)),
-                    createInitialEmptyOutputBuffers(PARTITIONED)
-                            .withNoMoreBufferIds());
+            taskInfo = createTask(sqlTaskManager, taskId, ImmutableSet.of(), createInitialEmptyOutputBuffers(PARTITIONED).withNoMoreBufferIds());
             assertEquals(taskInfo.getTaskStatus().getState(), TaskState.FINISHED);
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
@@ -122,13 +121,7 @@ public class TestSqlTaskManager
     {
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = TASK_ID;
-            TaskInfo taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
-                    taskId,
-                    Optional.of(PLAN_FRAGMENT),
-                    ImmutableList.of(new TaskSource(TABLE_SCAN_NODE_ID, ImmutableSet.of(SPLIT), true)),
-                    createInitialEmptyOutputBuffers(PARTITIONED)
-                            .withBuffer(OUT, 0)
-                            .withNoMoreBufferIds());
+            TaskInfo taskInfo = createTask(sqlTaskManager, taskId, ImmutableSet.of(SPLIT), createInitialEmptyOutputBuffers(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds());
             assertEquals(taskInfo.getTaskStatus().getState(), TaskState.RUNNING);
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
@@ -158,17 +151,10 @@ public class TestSqlTaskManager
 
     @Test
     public void testCancel()
-            throws Exception
     {
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = TASK_ID;
-            TaskInfo taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
-                    taskId,
-                    Optional.of(PLAN_FRAGMENT),
-                    ImmutableList.of(),
-                    createInitialEmptyOutputBuffers(PARTITIONED)
-                            .withBuffer(OUT, 0)
-                            .withNoMoreBufferIds());
+            TaskInfo taskInfo = createTask(sqlTaskManager, taskId, createInitialEmptyOutputBuffers(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds());
             assertEquals(taskInfo.getTaskStatus().getState(), TaskState.RUNNING);
             assertNull(taskInfo.getStats().getEndTime());
 
@@ -188,17 +174,10 @@ public class TestSqlTaskManager
 
     @Test
     public void testAbort()
-            throws Exception
     {
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = TASK_ID;
-            TaskInfo taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
-                    taskId,
-                    Optional.of(PLAN_FRAGMENT),
-                    ImmutableList.of(),
-                    createInitialEmptyOutputBuffers(PARTITIONED)
-                            .withBuffer(OUT, 0)
-                            .withNoMoreBufferIds());
+            TaskInfo taskInfo = createTask(sqlTaskManager, taskId, createInitialEmptyOutputBuffers(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds());
             assertEquals(taskInfo.getTaskStatus().getState(), TaskState.RUNNING);
             assertNull(taskInfo.getStats().getEndTime());
 
@@ -222,13 +201,7 @@ public class TestSqlTaskManager
     {
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = TASK_ID;
-            TaskInfo taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
-                    taskId,
-                    Optional.of(PLAN_FRAGMENT),
-                    ImmutableList.of(new TaskSource(TABLE_SCAN_NODE_ID, ImmutableSet.of(SPLIT), true)),
-                    createInitialEmptyOutputBuffers(PARTITIONED)
-                            .withBuffer(OUT, 0)
-                            .withNoMoreBufferIds());
+            TaskInfo taskInfo = createTask(sqlTaskManager, taskId, ImmutableSet.of(SPLIT), createInitialEmptyOutputBuffers(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds());
             assertEquals(taskInfo.getTaskStatus().getState(), TaskState.RUNNING);
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
@@ -251,13 +224,7 @@ public class TestSqlTaskManager
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig().setInfoMaxAge(new Duration(5, TimeUnit.MILLISECONDS)))) {
             TaskId taskId = TASK_ID;
 
-            TaskInfo taskInfo = sqlTaskManager.updateTask(TEST_SESSION,
-                    taskId,
-                    Optional.of(PLAN_FRAGMENT),
-                    ImmutableList.of(),
-                    createInitialEmptyOutputBuffers(PARTITIONED)
-                            .withBuffer(OUT, 0)
-                            .withNoMoreBufferIds());
+            TaskInfo taskInfo = createTask(sqlTaskManager, taskId, createInitialEmptyOutputBuffers(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds());
             assertEquals(taskInfo.getTaskStatus().getState(), TaskState.RUNNING);
 
             taskInfo = sqlTaskManager.cancelTask(taskId);
@@ -270,8 +237,45 @@ public class TestSqlTaskManager
             sqlTaskManager.removeOldTasks();
 
             for (TaskInfo info : sqlTaskManager.getAllTaskInfo()) {
-                assertNotEquals(info.getTaskStatus().getTaskId(), taskId);
+                assertNotEquals(info.getTaskId(), taskId);
             }
+        }
+    }
+
+    @Test
+    public void testMultipleCoordinatorAssignments()
+    {
+        try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
+            TaskId taskId = TASK_ID;
+            TaskInfo taskInfo = createTask(sqlTaskManager, taskId, createInitialEmptyOutputBuffers(PARTITIONED).withNoMoreBufferIds());
+            assertEquals(taskInfo.getTaskStatus().getState(), TaskState.RUNNING);
+
+            sqlTaskManager.updateMemoryPoolAssignments(new MemoryPoolAssignmentsRequest(
+                    "coordinator1",
+                    1,
+                    ImmutableList.of(new MemoryPoolAssignment(taskId.getQueryId(), RESERVED_POOL))));
+            assertEquals(sqlTaskManager.getQueryContext(taskId.getQueryId()).getMemoryPool().getId(), RESERVED_POOL);
+
+            // Update to reserved pool
+            sqlTaskManager.updateMemoryPoolAssignments(new MemoryPoolAssignmentsRequest(
+                    "coordinator1",
+                    2,
+                    ImmutableList.of(new MemoryPoolAssignment(taskId.getQueryId(), GENERAL_POOL))));
+            assertEquals(sqlTaskManager.getQueryContext(taskId.getQueryId()).getMemoryPool().getId(), GENERAL_POOL);
+
+            // Prior versions are rejected
+            sqlTaskManager.updateMemoryPoolAssignments(new MemoryPoolAssignmentsRequest(
+                    "coordinator1",
+                    1,
+                    ImmutableList.of(new MemoryPoolAssignment(taskId.getQueryId(), RESERVED_POOL))));
+            assertEquals(sqlTaskManager.getQueryContext(taskId.getQueryId()).getMemoryPool().getId(), GENERAL_POOL);
+
+            // Different coordinators are not rejected
+            sqlTaskManager.updateMemoryPoolAssignments(new MemoryPoolAssignmentsRequest(
+                    "coordinator2",
+                    1,
+                    ImmutableList.of(new MemoryPoolAssignment(taskId.getQueryId(), RESERVED_POOL))));
+            assertEquals(sqlTaskManager.getQueryContext(taskId.getQueryId()).getMemoryPool().getId(), RESERVED_POOL);
         }
     }
 
@@ -281,21 +285,58 @@ public class TestSqlTaskManager
                 createTestingPlanner(),
                 new MockLocationFactory(),
                 taskExecutor,
-                new QueryMonitor(new ObjectMapperProvider().get(), jsonCodec(StageInfo.class), new EventListenerManager(), new NodeInfo("test"), new NodeVersion("testVersion"), new QueryMonitorConfig()),
+                createTestSplitMonitor(),
                 new NodeInfo("test"),
                 localMemoryManager,
                 taskManagementExecutor,
                 config,
                 new NodeMemoryConfig(),
                 localSpillManager,
-                new NodeSpillConfig());
+                new MockExchangeClientSupplier(),
+                new NodeSpillConfig(),
+                new TestingGcMonitor(),
+                new BlockEncodingManager(),
+                new OrderingCompiler(),
+                new NoOpFragmentResultCacheManager(),
+                new ObjectMapper(),
+                new SpoolingOutputBufferFactory(new FeaturesConfig()));
+    }
+
+    private TaskInfo createTask(SqlTaskManager sqlTaskManager, TaskId taskId, ImmutableSet<ScheduledSplit> splits, OutputBuffers outputBuffers)
+    {
+        return sqlTaskManager.updateTask(TEST_SESSION,
+                taskId,
+                Optional.of(PLAN_FRAGMENT),
+                ImmutableList.of(new TaskSource(TABLE_SCAN_NODE_ID, splits, true)),
+                outputBuffers,
+                Optional.of(new TableWriteInfo(Optional.empty(), Optional.empty(), Optional.empty())));
+    }
+
+    private TaskInfo createTask(SqlTaskManager sqlTaskManager, TaskId taskId, OutputBuffers outputBuffers)
+    {
+        sqlTaskManager.getQueryContext(taskId.getQueryId())
+                .addTaskContext(
+                        new TaskStateMachine(taskId, directExecutor()),
+                        testSessionBuilder().build(),
+                        false,
+                        false,
+                        false,
+                        false,
+                        false);
+        return sqlTaskManager.updateTask(
+                TEST_SESSION,
+                taskId,
+                Optional.of(PLAN_FRAGMENT),
+                ImmutableList.of(),
+                outputBuffers,
+                Optional.of(new TableWriteInfo(Optional.empty(), Optional.empty(), Optional.empty())));
     }
 
     public static class MockExchangeClientSupplier
             implements ExchangeClientSupplier
     {
         @Override
-        public ExchangeClient get(SystemMemoryUsageListener systemMemoryUsageListener)
+        public ExchangeClient get(LocalMemoryContext systemMemoryContext)
         {
             throw new UnsupportedOperationException();
         }
@@ -323,13 +364,19 @@ public class TestSqlTaskManager
         }
 
         @Override
-        public URI createTaskLocation(Node node, TaskId taskId)
+        public URI createLegacyTaskLocation(InternalNode node, TaskId taskId)
         {
             return URI.create("http://fake.invalid/task/" + node.getNodeIdentifier() + "/" + taskId);
         }
 
         @Override
-        public URI createMemoryInfoLocation(Node node)
+        public URI createTaskLocation(InternalNode node, TaskId taskId)
+        {
+            return createLegacyTaskLocation(node, taskId);
+        }
+
+        @Override
+        public URI createMemoryInfoLocation(InternalNode node)
         {
             return URI.create("http://fake.invalid/" + node.getNodeIdentifier() + "/memory");
         }

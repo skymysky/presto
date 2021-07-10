@@ -13,25 +13,25 @@
  */
 package com.facebook.presto.raptor.metadata;
 
+import com.facebook.presto.common.predicate.SortedRangeSet;
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.raptor.RaptorColumnHandle;
-import com.facebook.presto.spi.predicate.SortedRangeSet;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.common.predicate.Domain.create;
+import static com.facebook.presto.common.predicate.Domain.singleValue;
+import static com.facebook.presto.common.predicate.Range.equal;
+import static com.facebook.presto.common.predicate.Range.greaterThanOrEqual;
+import static com.facebook.presto.common.predicate.TupleDomain.withColumnDomains;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.raptor.RaptorColumnHandle.bucketNumberColumnHandle;
 import static com.facebook.presto.raptor.RaptorColumnHandle.shardUuidColumnHandle;
 import static com.facebook.presto.raptor.util.UuidUtil.uuidStringToBytes;
-import static com.facebook.presto.spi.predicate.Domain.create;
-import static com.facebook.presto.spi.predicate.Domain.singleValue;
-import static com.facebook.presto.spi.predicate.Range.equal;
-import static com.facebook.presto.spi.predicate.Range.greaterThanOrEqual;
-import static com.facebook.presto.spi.predicate.TupleDomain.withColumnDomains;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static io.airlift.slice.Slices.utf8Slice;
 import static java.sql.JDBCType.VARBINARY;
 import static java.util.UUID.randomUUID;
@@ -43,13 +43,12 @@ public class TestShardPredicate
 
     @Test
     public void testSimpleShardUuidPredicate()
-            throws Exception
     {
         String uuid = randomUUID().toString();
         TupleDomain<RaptorColumnHandle> tupleDomain = withColumnDomains(ImmutableMap.of(
                 shardUuidColumnHandle("test"), singleValue(VARCHAR, utf8Slice(uuid))));
 
-        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain, bucketed);
+        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain);
 
         assertEquals(shardPredicate.getPredicate(), "shard_uuid = ?");
         assertEquals(shardPredicate.getTypes(), ImmutableList.of(VARBINARY));
@@ -58,7 +57,6 @@ public class TestShardPredicate
 
     @Test
     public void testDiscreteShardUuidPredicate()
-            throws Exception
     {
         Slice uuid0 = utf8Slice(randomUUID().toString());
         Slice uuid1 = utf8Slice(randomUUID().toString());
@@ -66,7 +64,7 @@ public class TestShardPredicate
                 shardUuidColumnHandle("test"),
                 create(SortedRangeSet.copyOf(VARCHAR, ImmutableList.of(equal(VARCHAR, uuid0), equal(VARCHAR, uuid1))), false)));
 
-        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain, bucketed);
+        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain);
 
         assertEquals(shardPredicate.getPredicate(), "shard_uuid = ? OR shard_uuid = ?");
         assertEquals(shardPredicate.getTypes(), ImmutableList.of(VARBINARY, VARBINARY));
@@ -75,7 +73,6 @@ public class TestShardPredicate
 
     @Test
     public void testInvalidUuid()
-            throws Exception
     {
         Slice uuid0 = utf8Slice("test1");
         Slice uuid1 = utf8Slice("test2");
@@ -83,45 +80,61 @@ public class TestShardPredicate
                 shardUuidColumnHandle("test"),
                 create(SortedRangeSet.copyOf(VARCHAR, ImmutableList.of(equal(VARCHAR, uuid0), equal(VARCHAR, uuid1))), false)));
 
-        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain, bucketed);
+        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain);
 
         assertEquals(shardPredicate.getPredicate(), "true");
     }
 
     @Test
     public void testRangeShardUuidPredicate()
-            throws Exception
     {
         Slice uuid0 = utf8Slice(randomUUID().toString());
         TupleDomain<RaptorColumnHandle> tupleDomain = withColumnDomains(ImmutableMap.of(
                 shardUuidColumnHandle("test"),
                 create(SortedRangeSet.copyOf(VARCHAR, ImmutableList.of(greaterThanOrEqual(VARCHAR, uuid0))), false)));
 
-        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain, bucketed);
+        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain);
         assertEquals(shardPredicate.getPredicate(), "true");
     }
 
     @Test
-    public void testBucketNumber()
-            throws Exception
+    public void testBucketNumberSingleRange()
     {
         TupleDomain<RaptorColumnHandle> tupleDomain = withColumnDomains(ImmutableMap.of(
                 bucketNumberColumnHandle("test"),
                 create(SortedRangeSet.copyOf(INTEGER, ImmutableList.of(equal(INTEGER, 1L))), false)));
 
-        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain, true);
-        assertEquals(shardPredicate.getPredicate(), "(bucket_number >= ? OR bucket_number IS NULL) AND (bucket_number <= ? OR bucket_number IS NULL)");
+        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain);
+        assertEquals(shardPredicate.getPredicate(), "(((bucket_number >= ? OR bucket_number IS NULL) AND (bucket_number <= ? OR bucket_number IS NULL)))");
     }
 
     @Test
-    public void testBucketNumberForNonBucketed()
-            throws Exception
+    public void testBucketNumberMultipleRanges()
     {
         TupleDomain<RaptorColumnHandle> tupleDomain = withColumnDomains(ImmutableMap.of(
                 bucketNumberColumnHandle("test"),
-                create(SortedRangeSet.copyOf(INTEGER, ImmutableList.of(equal(INTEGER, 1L))), false)));
+                create(SortedRangeSet.copyOf(INTEGER, ImmutableList.of(equal(INTEGER, 1L), equal(INTEGER, 3L))), false)));
 
-        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain, false);
-        assertEquals(shardPredicate.getPredicate(), "false");
+        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain);
+        assertEquals(shardPredicate.getPredicate(),
+                "(((bucket_number >= ? OR bucket_number IS NULL) AND (bucket_number <= ? OR bucket_number IS NULL))" +
+                        " OR ((bucket_number >= ? OR bucket_number IS NULL) AND (bucket_number <= ? OR bucket_number IS NULL)))");
+    }
+
+    @Test
+    public void testMultipleColumnsMultipleRanges()
+    {
+        TupleDomain<RaptorColumnHandle> tupleDomain = withColumnDomains(ImmutableMap.of(
+                bucketNumberColumnHandle("test"),
+                create(SortedRangeSet.copyOf(INTEGER, ImmutableList.of(equal(INTEGER, 1L), equal(INTEGER, 3L))), false),
+                new RaptorColumnHandle("test", "col", 1, INTEGER),
+                create(SortedRangeSet.copyOf(INTEGER, ImmutableList.of(equal(INTEGER, 1L), equal(INTEGER, 3L))), false)));
+        ShardPredicate shardPredicate = ShardPredicate.create(tupleDomain);
+        assertEquals(
+                shardPredicate.getPredicate(),
+                "(((bucket_number >= ? OR bucket_number IS NULL) AND (bucket_number <= ? OR bucket_number IS NULL)) " +
+                        "OR ((bucket_number >= ? OR bucket_number IS NULL) AND (bucket_number <= ? OR bucket_number IS NULL))) " +
+                        "AND (((c1_max >= ? OR c1_max IS NULL) AND (c1_min <= ? OR c1_min IS NULL)) " +
+                        "OR ((c1_max >= ? OR c1_max IS NULL) AND (c1_min <= ? OR c1_min IS NULL)))");
     }
 }

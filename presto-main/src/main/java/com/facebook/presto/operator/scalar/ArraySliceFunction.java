@@ -13,14 +13,13 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlType;
 import com.facebook.presto.spi.function.TypeParameter;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
 
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.facebook.presto.util.Failures.checkCondition;
@@ -53,8 +52,8 @@ public final class ArraySliceFunction
 
         long toIndex = Math.min(fromIndex + length, size + 1);
 
-        if (fromIndex >= toIndex || fromIndex < 0 || toIndex < 0) {
-            return type.createBlockBuilder(new BlockBuilderStatus(), 0).build();
+        if (fromIndex >= toIndex || fromIndex < 1) {
+            return type.createBlockBuilder(null, 0).build();
         }
 
         return array.getRegion((int) (fromIndex - 1), (int) (toIndex - fromIndex));

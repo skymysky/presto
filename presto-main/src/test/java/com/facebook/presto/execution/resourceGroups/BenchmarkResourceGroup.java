@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.execution.resourceGroups;
 
-import com.facebook.presto.execution.MockQueryExecution;
+import com.facebook.presto.execution.MockManagedQueryExecution;
 import com.facebook.presto.execution.resourceGroups.InternalResourceGroup.RootInternalResourceGroup;
 import io.airlift.units.DataSize;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -33,6 +33,7 @@ import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
 import org.openjdk.jmh.runner.options.VerboseMode;
 
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -50,7 +51,6 @@ public class BenchmarkResourceGroup
 {
     @Benchmark
     public Object benchmark(BenchmarkData data)
-            throws Throwable
     {
         data.getRoot().processQueuedQueries();
         return data.getRoot();
@@ -72,19 +72,19 @@ public class BenchmarkResourceGroup
         @Setup
         public void setup()
         {
-            root = new RootInternalResourceGroup("root", (group, export) -> {}, executor);
+            root = new RootInternalResourceGroup("root", (group, export) -> {}, executor, ignored -> Optional.empty(), rg -> false);
             root.setSoftMemoryLimit(new DataSize(1, MEGABYTE));
             root.setMaxQueuedQueries(queries);
             root.setHardConcurrencyLimit(queries);
             InternalResourceGroup group = root;
             for (int i = 0; i < children; i++) {
-                group = root.getOrCreateSubGroup(String.valueOf(i));
+                group = root.getOrCreateSubGroup(String.valueOf(i), true);
                 group.setSoftMemoryLimit(new DataSize(1, MEGABYTE));
                 group.setMaxQueuedQueries(queries);
                 group.setHardConcurrencyLimit(queries);
             }
             for (int i = 0; i < queries; i++) {
-                group.run(new MockQueryExecution(10));
+                group.run(new MockManagedQueryExecution(10));
             }
         }
 

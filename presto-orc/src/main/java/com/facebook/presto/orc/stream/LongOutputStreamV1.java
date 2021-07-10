@@ -13,15 +13,15 @@
  */
 package com.facebook.presto.orc.stream;
 
+import com.facebook.presto.orc.ColumnWriterOptions;
+import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.OrcOutputBuffer;
 import com.facebook.presto.orc.checkpoint.LongStreamCheckpoint;
 import com.facebook.presto.orc.checkpoint.LongStreamV1Checkpoint;
-import com.facebook.presto.orc.metadata.CompressionKind;
 import com.facebook.presto.orc.metadata.Stream;
 import com.facebook.presto.orc.metadata.Stream.StreamKind;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.SizeOf;
-import io.airlift.slice.SliceOutput;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.util.ArrayList;
@@ -31,6 +31,7 @@ import java.util.Optional;
 import static com.facebook.presto.orc.stream.LongDecode.writeVLong;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
+import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
 public class LongOutputStreamV1
@@ -56,10 +57,10 @@ public class LongOutputStreamV1
 
     private boolean closed;
 
-    public LongOutputStreamV1(CompressionKind compression, int bufferSize, boolean signed, StreamKind streamKind)
+    public LongOutputStreamV1(ColumnWriterOptions columnWriterOptions, Optional<DwrfDataEncryptor> dwrfEncryptor, boolean signed, StreamKind streamKind)
     {
         this.streamKind = requireNonNull(streamKind, "streamKind is null");
-        this.buffer = new OrcOutputBuffer(compression, bufferSize);
+        this.buffer = new OrcOutputBuffer(columnWriterOptions, dwrfEncryptor);
         this.signed = signed;
     }
 
@@ -178,6 +179,7 @@ public class LongOutputStreamV1
     {
         closed = true;
         flushSequence();
+        buffer.close();
     }
 
     @Override
@@ -188,17 +190,15 @@ public class LongOutputStreamV1
     }
 
     @Override
-    public Optional<Stream> writeDataStreams(int column, SliceOutput outputStream)
+    public StreamDataOutput getStreamDataOutput(int column)
     {
-        checkState(closed);
-        int length = buffer.writeDataTo(outputStream);
-        return Optional.of(new Stream(column, streamKind, length, true));
+        return new StreamDataOutput(buffer::writeDataTo, new Stream(column, streamKind, toIntExact(buffer.getOutputDataSize()), true));
     }
 
     @Override
     public long getBufferedBytes()
     {
-        return buffer.size() + (Long.BYTES * size);
+        return buffer.estimateOutputDataSize() + (Long.BYTES * size);
     }
 
     @Override

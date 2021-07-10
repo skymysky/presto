@@ -13,15 +13,15 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.type.ParameterKind;
-import com.facebook.presto.spi.type.ParametricType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeParameter;
+import com.facebook.presto.common.type.FunctionType;
+import com.facebook.presto.common.type.ParameterKind;
+import com.facebook.presto.common.type.ParametricType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeParameter;
 
 import java.util.List;
 
-import static com.facebook.presto.type.FunctionType.NAME;
+import static com.facebook.presto.common.type.FunctionType.NAME;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.stream.Collectors.toList;
 
@@ -41,14 +41,14 @@ public final class FunctionParametricType
     }
 
     @Override
-    public Type createType(TypeManager typeManager, List<TypeParameter> parameters)
+    public Type createType(List<TypeParameter> parameters)
     {
         checkArgument(parameters.size() >= 1, "Function type must have at least one parameter, got %s", parameters);
         checkArgument(
                 parameters.stream().allMatch(parameter -> parameter.getKind() == ParameterKind.TYPE),
                 "Expected only types as a parameters, got %s",
                 parameters);
-        List<Type> types = parameters.stream().map(parameter -> parameter.getType()).collect(toList());
+        List<Type> types = parameters.stream().map(TypeParameter::getType).collect(toList());
 
         return new FunctionType(types.subList(0, types.size() - 1), types.get(types.size() - 1));
     }

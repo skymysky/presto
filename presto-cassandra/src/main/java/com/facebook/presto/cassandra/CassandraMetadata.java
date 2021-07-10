@@ -13,7 +13,11 @@
  */
 package com.facebook.presto.cassandra;
 
+import com.datastax.driver.core.ProtocolVersion;
+import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.cassandra.util.CassandraCqlUtils;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
@@ -34,11 +38,9 @@ import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.TableNotFoundException;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorOutputMetadata;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.statistics.ComputedStatistics;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.json.JsonCodec;
 import io.airlift.slice.Slice;
 
 import javax.inject.Inject;
@@ -69,6 +71,7 @@ public class CassandraMetadata
     private final CassandraSession cassandraSession;
     private final CassandraPartitionManager partitionManager;
     private final boolean allowDropTable;
+    private final ProtocolVersion protocolVersion;
 
     private final JsonCodec<List<ExtraColumnMetadata>> extraColumnMetadataCodec;
 
@@ -85,6 +88,7 @@ public class CassandraMetadata
         this.cassandraSession = requireNonNull(cassandraSession, "cassandraSession is null");
         this.allowDropTable = requireNonNull(config, "config is null").getAllowDropTable();
         this.extraColumnMetadataCodec = requireNonNull(extraColumnMetadataCodec, "extraColumnMetadataCodec is null");
+        this.protocolVersion = requireNonNull(config, "config is null").getProtocolVersion();
     }
 
     @Override
@@ -185,7 +189,7 @@ public class CassandraMetadata
 
     private List<SchemaTableName> listTables(ConnectorSession session, SchemaTablePrefix prefix)
     {
-        if (prefix.getSchemaName() == null) {
+        if (prefix.getTableName() == null) {
             return listTables(session, prefix.getSchemaName());
         }
         return ImmutableList.of(new SchemaTableName(prefix.getSchemaName(), prefix.getTableName()));
@@ -241,7 +245,7 @@ public class CassandraMetadata
     @Override
     public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean ignoreExisting)
     {
-        throw new PrestoException(NOT_SUPPORTED, "CREATE TABLE not yet supported for Cassandra");
+        createTable(tableMetadata);
     }
 
     @Override
@@ -254,10 +258,11 @@ public class CassandraMetadata
         }
 
         CassandraTableHandle cassandraTableHandle = (CassandraTableHandle) tableHandle;
-        String schemaName = cassandraTableHandle.getSchemaName();
-        String tableName = cassandraTableHandle.getTableName();
+        if (cassandraSession.isMaterializedView(cassandraTableHandle.getSchemaTableName())) {
+            throw new PrestoException(NOT_SUPPORTED, "Dropping materialized views not yet supported");
+        }
 
-        cassandraSession.execute(String.format("DROP TABLE \"%s\".\"%s\"", schemaName, tableName));
+        cassandraSession.execute(String.format("DROP TABLE \"%s\".\"%s\"", cassandraTableHandle.getSchemaName(), cassandraTableHandle.getTableName()));
     }
 
     @Override
@@ -268,6 +273,11 @@ public class CassandraMetadata
 
     @Override
     public ConnectorOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, Optional<ConnectorNewTableLayout> layout)
+    {
+        return createTable(tableMetadata);
+    }
+
+    private CassandraOutputTableHandle createTable(ConnectorTableMetadata tableMetadata)
     {
         ImmutableList.Builder<String> columnNames = ImmutableList.builder();
         ImmutableList.Builder<Type> columnTypes = ImmutableList.builder();
@@ -292,7 +302,7 @@ public class CassandraMetadata
             queryBuilder.append(", ")
                     .append(name)
                     .append(" ")
-                    .append(toCassandraType(type).name().toLowerCase(ENGLISH));
+                    .append(toCassandraType(type, protocolVersion).name().toLowerCase(ENGLISH));
         }
         queryBuilder.append(") ");
 
@@ -311,7 +321,7 @@ public class CassandraMetadata
     }
 
     @Override
-    public Optional<ConnectorOutputMetadata> finishCreateTable(ConnectorSession session, ConnectorOutputTableHandle tableHandle, Collection<Slice> fragments)
+    public Optional<ConnectorOutputMetadata> finishCreateTable(ConnectorSession session, ConnectorOutputTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         return Optional.empty();
     }
@@ -320,6 +330,10 @@ public class CassandraMetadata
     public ConnectorInsertTableHandle beginInsert(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         CassandraTableHandle table = (CassandraTableHandle) tableHandle;
+        if (cassandraSession.isMaterializedView(table.getSchemaTableName())) {
+            throw new PrestoException(NOT_SUPPORTED, "Inserting into materialized views not yet supported");
+        }
+
         SchemaTableName schemaTableName = new SchemaTableName(table.getSchemaName(), table.getTableName());
         List<CassandraColumnHandle> columns = cassandraSession.getTable(schemaTableName).getColumns();
         List<String> columnNames = columns.stream().map(CassandraColumnHandle::getName).map(CassandraCqlUtils::validColumnName).collect(Collectors.toList());
@@ -334,7 +348,7 @@ public class CassandraMetadata
     }
 
     @Override
-    public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments)
+    public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         return Optional.empty();
     }

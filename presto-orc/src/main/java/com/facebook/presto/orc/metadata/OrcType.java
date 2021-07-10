@@ -13,38 +13,35 @@
  */
 package com.facebook.presto.orc.metadata;
 
-import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.type.CharType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.NamedTypeSignature;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
-import com.facebook.presto.spi.type.VarcharType;
+import com.facebook.presto.common.NotSupportedException;
+import com.facebook.presto.common.type.CharType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.VarcharType;
 import com.google.common.collect.ImmutableList;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
-import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.StandardTypes.ARRAY;
-import static com.facebook.presto.spi.type.StandardTypes.MAP;
-import static com.facebook.presto.spi.type.StandardTypes.ROW;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.StandardTypes.ARRAY;
+import static com.facebook.presto.common.type.StandardTypes.MAP;
+import static com.facebook.presto.common.type.StandardTypes.ROW;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
-import static java.util.stream.Collectors.toList;
 
 public class OrcType
 {
@@ -227,15 +224,16 @@ public class OrcType
             return createOrcMapType(nextFieldTypeIndex, type.getTypeParameters().get(0), type.getTypeParameters().get(1));
         }
         if (type.getTypeSignature().getBase().equals(ROW)) {
-            List<String> fieldNames = type.getTypeSignature().getParameters().stream()
-                    .map(TypeSignatureParameter::getNamedTypeSignature)
-                    .map(NamedTypeSignature::getName)
-                    .collect(toList());
+            List<String> fieldNames = new ArrayList<>();
+            for (int i = 0; i < type.getTypeSignature().getParameters().size(); i++) {
+                TypeSignatureParameter parameter = type.getTypeSignature().getParameters().get(i);
+                fieldNames.add(parameter.getNamedTypeSignature().getName().orElse("field" + i));
+            }
             List<Type> fieldTypes = type.getTypeParameters();
 
             return createOrcRowType(nextFieldTypeIndex, fieldNames, fieldTypes);
         }
-        throw new PrestoException(NOT_SUPPORTED, format("Unsupported Hive type: %s", type));
+        throw new NotSupportedException(format("Unsupported Hive type: %s", type));
     }
 
     private static List<OrcType> createOrcArrayType(int nextFieldTypeIndex, Type itemType)

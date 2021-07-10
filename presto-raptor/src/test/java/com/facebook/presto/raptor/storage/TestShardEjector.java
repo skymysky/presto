@@ -14,8 +14,11 @@
 package com.facebook.presto.raptor.storage;
 
 import com.facebook.presto.client.NodeVersion;
-import com.facebook.presto.metadata.PrestoNode;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.raptor.backup.BackupStore;
+import com.facebook.presto.raptor.filesystem.LocalFileStorageService;
+import com.facebook.presto.raptor.filesystem.LocalOrcDataEnvironment;
 import com.facebook.presto.raptor.metadata.ColumnInfo;
 import com.facebook.presto.raptor.metadata.MetadataDao;
 import com.facebook.presto.raptor.metadata.ShardInfo;
@@ -23,11 +26,11 @@ import com.facebook.presto.raptor.metadata.ShardManager;
 import com.facebook.presto.raptor.metadata.ShardMetadata;
 import com.facebook.presto.spi.Node;
 import com.facebook.presto.spi.NodeManager;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.testing.TestingNodeManager;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.units.Duration;
+import org.apache.hadoop.fs.Path;
 import org.skife.jdbi.v2.DBI;
 import org.skife.jdbi.v2.Handle;
 import org.skife.jdbi.v2.IDBI;
@@ -43,10 +46,11 @@ import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.raptor.metadata.SchemaDaoUtil.createTablesWithRetry;
 import static com.facebook.presto.raptor.metadata.TestDatabaseShardManager.createShardManager;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.google.common.io.Files.createTempDir;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
@@ -57,6 +61,7 @@ import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
+@Test(singleThreaded = true)
 public class TestShardEjector
 {
     private IDBI dbi;
@@ -67,15 +72,14 @@ public class TestShardEjector
 
     @BeforeMethod
     public void setup()
-            throws Exception
     {
-        dbi = new DBI("jdbc:h2:mem:test" + System.nanoTime());
+        dbi = new DBI("jdbc:h2:mem:test" + System.nanoTime() + "_" + ThreadLocalRandom.current().nextInt());
         dummyHandle = dbi.open();
         createTablesWithRetry(dbi);
         shardManager = createShardManager(dbi);
 
         dataDir = createTempDir();
-        storageService = new FileStorageService(dataDir);
+        storageService = new LocalFileStorageService(new LocalOrcDataEnvironment(), dataDir.toURI());
         storageService.start();
     }
 
@@ -104,6 +108,7 @@ public class TestShardEjector
                 storageService,
                 new Duration(1, HOURS),
                 Optional.of(new TestingBackupStore()),
+                new LocalOrcDataEnvironment(),
                 "test");
 
         List<ShardInfo> shards = ImmutableList.<ShardInfo>builder()
@@ -126,20 +131,20 @@ public class TestShardEjector
         long tableId = createTable("test");
         List<ColumnInfo> columns = ImmutableList.of(new ColumnInfo(1, BIGINT));
 
-        shardManager.createTable(tableId, columns, false, OptionalLong.empty());
+        shardManager.createTable(tableId, columns, false, OptionalLong.empty(), false);
 
         long transactionId = shardManager.beginTransaction();
         shardManager.commitShards(transactionId, tableId, columns, shards, Optional.empty(), 0);
 
         for (ShardInfo shard : shards.subList(0, 8)) {
-            File file = storageService.getStorageFile(shard.getShardUuid());
-            storageService.createParents(file);
+            File file = new File(storageService.getStorageFile(shard.getShardUuid()).toString());
+            storageService.createParents(new Path(file.toURI()));
             assertTrue(file.createNewFile());
         }
 
         ejector.process();
 
-        shardManager.getShardNodes(tableId, TupleDomain.all());
+        shardManager.getShardNodes(tableId, TupleDomain.all(), false);
 
         Set<UUID> ejectedShards = shards.subList(0, 4).stream()
                 .map(ShardInfo::getShardUuid)
@@ -148,23 +153,23 @@ public class TestShardEjector
                 .map(ShardInfo::getShardUuid)
                 .collect(toSet());
 
-        Set<UUID> remaining = uuids(shardManager.getNodeShards("node1"));
+        Set<UUID> remaining = uuids(shardManager.getNodeShardsAndDeltas("node1"));
 
         for (UUID uuid : ejectedShards) {
             assertFalse(remaining.contains(uuid));
-            assertFalse(storageService.getStorageFile(uuid).exists());
+            assertFalse(new File(storageService.getStorageFile(uuid).toString()).exists());
         }
 
         assertEquals(remaining, keptShards);
         for (UUID uuid : keptShards) {
-            assertTrue(storageService.getStorageFile(uuid).exists());
+            assertTrue(new File(storageService.getStorageFile(uuid).toString()).exists());
         }
 
         Set<UUID> others = ImmutableSet.<UUID>builder()
-                .addAll(uuids(shardManager.getNodeShards("node2")))
-                .addAll(uuids(shardManager.getNodeShards("node3")))
-                .addAll(uuids(shardManager.getNodeShards("node4")))
-                .addAll(uuids(shardManager.getNodeShards("node5")))
+                .addAll(uuids(shardManager.getNodeShardsAndDeltas("node2")))
+                .addAll(uuids(shardManager.getNodeShardsAndDeltas("node3")))
+                .addAll(uuids(shardManager.getNodeShardsAndDeltas("node4")))
+                .addAll(uuids(shardManager.getNodeShardsAndDeltas("node5")))
                 .build();
 
         assertTrue(others.containsAll(ejectedShards));
@@ -172,7 +177,7 @@ public class TestShardEjector
 
     private long createTable(String name)
     {
-        return dbi.onDemand(MetadataDao.class).insertTable("test", name, false, false, null, 0);
+        return dbi.onDemand(MetadataDao.class).insertTable("test", name, false, false, null, 0, false);
     }
 
     private static Set<UUID> uuids(Set<ShardMetadata> metadata)
@@ -199,7 +204,7 @@ public class TestShardEjector
 
     private static Node createTestingNode(String identifier)
     {
-        return new PrestoNode(identifier, URI.create("http://test"), NodeVersion.UNKNOWN, false);
+        return new InternalNode(identifier, URI.create("http://test"), NodeVersion.UNKNOWN, false);
     }
 
     private static class TestingBackupStore

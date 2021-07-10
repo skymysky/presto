@@ -14,45 +14,58 @@
 package com.facebook.presto.server;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.type.TimeZoneKey;
 import com.facebook.presto.metadata.SessionPropertyManager;
 import com.facebook.presto.security.AccessControl;
 import com.facebook.presto.spi.QueryId;
+import com.facebook.presto.spi.function.SqlFunctionId;
+import com.facebook.presto.spi.function.SqlInvokedFunction;
+import com.facebook.presto.spi.security.AccessControlContext;
 import com.facebook.presto.spi.security.Identity;
+import com.facebook.presto.sql.SqlEnvironmentConfig;
 import com.facebook.presto.transaction.TransactionManager;
 
+import javax.annotation.concurrent.ThreadSafe;
 import javax.inject.Inject;
 
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 import static com.facebook.presto.Session.SessionBuilder;
-import static com.facebook.presto.spi.type.TimeZoneKey.getTimeZoneKey;
+import static com.facebook.presto.common.type.TimeZoneKey.getTimeZoneKey;
 import static java.util.Map.Entry;
 import static java.util.Objects.requireNonNull;
 
+@ThreadSafe
 public class QuerySessionSupplier
         implements SessionSupplier
 {
     private final TransactionManager transactionManager;
     private final AccessControl accessControl;
     private final SessionPropertyManager sessionPropertyManager;
+    private final Optional<TimeZoneKey> forcedSessionTimeZone;
 
     @Inject
     public QuerySessionSupplier(
             TransactionManager transactionManager,
             AccessControl accessControl,
-            SessionPropertyManager sessionPropertyManager)
+            SessionPropertyManager sessionPropertyManager,
+            SqlEnvironmentConfig config)
     {
         this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
         this.sessionPropertyManager = requireNonNull(sessionPropertyManager, "sessionPropertyManager is null");
+        requireNonNull(config, "config is null");
+        this.forcedSessionTimeZone = requireNonNull(config.getForcedSessionTimeZone(), "forcedSessionTimeZone is null");
     }
 
     @Override
     public Session createSession(QueryId queryId, SessionContext context)
     {
         Identity identity = context.getIdentity();
-        accessControl.checkCanSetUser(identity.getPrincipal().orElse(null), identity.getUser());
+        accessControl.checkCanSetUser(new AccessControlContext(queryId, Optional.ofNullable(context.getClientInfo()), Optional.ofNullable(context.getSource())),
+                identity.getPrincipal(), identity.getUser());
 
         SessionBuilder sessionBuilder = Session.builder(sessionPropertyManager)
                 .setQueryId(queryId)
@@ -63,9 +76,14 @@ public class QuerySessionSupplier
                 .setRemoteUserAddress(context.getRemoteUserAddress())
                 .setUserAgent(context.getUserAgent())
                 .setClientInfo(context.getClientInfo())
-                .setClientTags(context.getClientTags());
+                .setClientTags(context.getClientTags())
+                .setTraceToken(context.getTraceToken())
+                .setResourceEstimates(context.getResourceEstimates());
 
-        if (context.getTimeZoneId() != null) {
+        if (forcedSessionTimeZone.isPresent()) {
+            sessionBuilder.setTimeZoneKey(forcedSessionTimeZone.get());
+        }
+        else if (context.getTimeZoneId() != null) {
             sessionBuilder.setTimeZoneKey(getTimeZoneKey(context.getTimeZoneId()));
         }
 
@@ -89,6 +107,10 @@ public class QuerySessionSupplier
 
         if (context.supportClientTransaction()) {
             sessionBuilder.setClientTransactionSupport();
+        }
+
+        for (Entry<SqlFunctionId, SqlInvokedFunction> entry : context.getSessionFunctions().entrySet()) {
+            sessionBuilder.addSessionFunction(entry.getKey(), entry.getValue());
         }
 
         Session session = sessionBuilder.build();

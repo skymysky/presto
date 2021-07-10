@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
 
 public interface PagesHashStrategy
 {
@@ -75,6 +75,14 @@ public interface PagesHashStrategy
      * the hashed columns and each entry is expected to be the same type.
      */
     boolean positionEqualsRow(int leftBlockIndex, int leftPosition, int rightPosition, Page page, int[] rightChannels);
+
+    /**
+     * Compares the hashed columns in this PagesHashStrategy to the hashed columns in the Page.
+     * The values are compared positionally under "not distinct from" semantics.
+     * {@code rightChannels} must have the same number of entries as the hashed columns
+     * and each entry is expected to be the same type.
+     */
+    boolean positionNotDistinctFromRow(int leftBlockIndex, int leftPosition, int rightPosition, Page page, int[] rightChannels);
 
     /**
      * Compares the hashed columns in this PagesHashStrategy at the specified positions.

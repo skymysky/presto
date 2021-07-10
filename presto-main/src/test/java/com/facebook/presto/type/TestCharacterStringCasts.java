@@ -16,10 +16,10 @@ package com.facebook.presto.type;
 import com.facebook.presto.operator.scalar.AbstractTestFunctions;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.common.type.CharType.createCharType;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
 import static com.facebook.presto.operator.scalar.CharacterStringCasts.varcharToCharSaturatedFloorCast;
-import static com.facebook.presto.spi.type.CharType.createCharType;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
 import static io.airlift.slice.Slices.utf8Slice;
 import static org.testng.Assert.assertEquals;
 
@@ -28,7 +28,6 @@ public class TestCharacterStringCasts
 {
     @Test
     public void testVarcharToVarcharCast()
-            throws Exception
     {
         assertFunction("cast('bar' as varchar(20))", createVarcharType(20), "bar");
         assertFunction("cast(cast('bar' as varchar(20)) as varchar(30))", createVarcharType(30), "bar");
@@ -48,7 +47,6 @@ public class TestCharacterStringCasts
 
     @Test
     public void testCharToVarcharCast()
-            throws Exception
     {
         assertFunction("cast(cast('bar' as char(5)) as varchar(10))", createVarcharType(10), "bar  ");
         assertFunction("cast(cast('bar' as char(5)) as varchar(1))", createVarcharType(1), "b");

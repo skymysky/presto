@@ -13,24 +13,23 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.OperatorDependency;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlNullable;
 import com.facebook.presto.spi.function.SqlType;
 import com.facebook.presto.spi.function.TypeParameter;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 
 import java.lang.invoke.MethodHandle;
 
+import static com.facebook.presto.common.function.OperatorType.GREATER_THAN;
 import static com.facebook.presto.operator.scalar.ArrayMinMaxUtils.booleanArrayMinMax;
 import static com.facebook.presto.operator.scalar.ArrayMinMaxUtils.doubleArrayMinMax;
 import static com.facebook.presto.operator.scalar.ArrayMinMaxUtils.longArrayMinMax;
 import static com.facebook.presto.operator.scalar.ArrayMinMaxUtils.sliceArrayMinMax;
-import static com.facebook.presto.spi.function.OperatorType.GREATER_THAN;
 import static com.facebook.presto.util.Failures.internalError;
 
 @ScalarFunction("array_max")
@@ -42,18 +41,8 @@ public final class ArrayMaxFunction
     @TypeParameter("T")
     @SqlType("T")
     @SqlNullable
-    public static Void arrayWithUnknownType(
-            @OperatorDependency(operator = GREATER_THAN, returnType = StandardTypes.BOOLEAN, argumentTypes = {"T", "T"}) MethodHandle compareMethodHandle,
-            @SqlType("array(T)") Block block)
-    {
-        return null;
-    }
-
-    @TypeParameter("T")
-    @SqlType("T")
-    @SqlNullable
     public static Long longArrayMax(
-            @OperatorDependency(operator = GREATER_THAN, returnType = StandardTypes.BOOLEAN, argumentTypes = {"T", "T"}) MethodHandle compareMethodHandle,
+            @OperatorDependency(operator = GREATER_THAN, argumentTypes = {"T", "T"}) MethodHandle compareMethodHandle,
             @TypeParameter("T") Type elementType,
             @SqlType("array(T)") Block block)
     {
@@ -64,7 +53,7 @@ public final class ArrayMaxFunction
     @SqlType("T")
     @SqlNullable
     public static Boolean booleanArrayMax(
-            @OperatorDependency(operator = GREATER_THAN, returnType = StandardTypes.BOOLEAN, argumentTypes = {"T", "T"}) MethodHandle compareMethodHandle,
+            @OperatorDependency(operator = GREATER_THAN, argumentTypes = {"T", "T"}) MethodHandle compareMethodHandle,
             @TypeParameter("T") Type elementType,
             @SqlType("array(T)") Block block)
     {
@@ -75,7 +64,7 @@ public final class ArrayMaxFunction
     @SqlType("T")
     @SqlNullable
     public static Double doubleArrayMax(
-            @OperatorDependency(operator = GREATER_THAN, returnType = StandardTypes.BOOLEAN, argumentTypes = {"T", "T"}) MethodHandle compareMethodHandle,
+            @OperatorDependency(operator = GREATER_THAN, argumentTypes = {"T", "T"}) MethodHandle compareMethodHandle,
             @TypeParameter("T") Type elementType,
             @SqlType("array(T)") Block block)
     {
@@ -86,7 +75,7 @@ public final class ArrayMaxFunction
     @SqlType("T")
     @SqlNullable
     public static Slice sliceArrayMax(
-            @OperatorDependency(operator = GREATER_THAN, returnType = StandardTypes.BOOLEAN, argumentTypes = {"T", "T"}) MethodHandle compareMethodHandle,
+            @OperatorDependency(operator = GREATER_THAN, argumentTypes = {"T", "T"}) MethodHandle compareMethodHandle,
             @TypeParameter("T") Type elementType,
             @SqlType("array(T)") Block block)
     {
@@ -97,7 +86,7 @@ public final class ArrayMaxFunction
     @SqlType("T")
     @SqlNullable
     public static Block blockArrayMax(
-            @OperatorDependency(operator = GREATER_THAN, returnType = StandardTypes.BOOLEAN, argumentTypes = {"T", "T"}) MethodHandle compareMethodHandle,
+            @OperatorDependency(operator = GREATER_THAN, argumentTypes = {"T", "T"}) MethodHandle compareMethodHandle,
             @TypeParameter("T") Type elementType,
             @SqlType("array(T)") Block block)
     {

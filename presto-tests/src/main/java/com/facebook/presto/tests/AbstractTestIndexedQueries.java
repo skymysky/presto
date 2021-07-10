@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.tests;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.tests.tpch.TpchIndexSpec;
 import com.facebook.presto.tests.tpch.TpchIndexSpec.Builder;
@@ -34,14 +35,8 @@ public abstract class AbstractTestIndexedQueries
             .addIndex("orders", TpchMetadata.TINY_SCALE_FACTOR, ImmutableSet.of("orderstatus", "shippriority"))
             .build();
 
-    protected AbstractTestIndexedQueries(QueryRunnerSupplier supplier)
-    {
-        super(supplier);
-    }
-
     @Test
     public void testExampleSystemTable()
-            throws Exception
     {
         assertQuery("SELECT name FROM sys.example", "SELECT 'test' AS name");
 
@@ -53,8 +48,20 @@ public abstract class AbstractTestIndexedQueries
     }
 
     @Test
+    public void testExplainAnalyzeIndexJoin()
+    {
+        assertQuerySucceeds(getSession(), "EXPLAIN ANALYZE " +
+                " SELECT *\n" +
+                "FROM (\n" +
+                "  SELECT *\n" +
+                "  FROM lineitem\n" +
+                "  WHERE partkey % 8 = 0) l\n" +
+                "JOIN orders o\n" +
+                "  ON l.orderkey = o.orderkey");
+    }
+
+    @Test
     public void testBasicIndexJoin()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -67,8 +74,27 @@ public abstract class AbstractTestIndexedQueries
     }
 
     @Test
+    public void testBasicIndexJoinWithSpillEnabled()
+    {
+        // spill is not supported for index join, but it shares the lookup join operator
+        // with non-index join.  Make sure no errors are thrown when running index joins
+        // when spill is enabled.
+        assertQuery(Session.builder(getSession())
+                        .setSystemProperty("spill_enabled", "true")
+                        .setSystemProperty("join_spill_enabled", "true")
+                        .build(),
+                "" +
+                "SELECT *\n" +
+                "FROM (\n" +
+                "  SELECT *\n" +
+                "  FROM lineitem\n" +
+                "  WHERE partkey % 8 = 0) l\n" +
+                "JOIN orders o\n" +
+                "  ON l.orderkey = o.orderkey");
+    }
+
+    @Test
     public void testBasicIndexJoinReverseCandidates()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -82,7 +108,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testBasicIndexJoinWithNullKeys()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -96,7 +121,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testMultiKeyIndexJoinAligned()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -110,7 +134,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testMultiKeyIndexJoinUnaligned()
-            throws Exception
     {
         // This test a join order that is different from the inner select column ordering
         assertQuery("" +
@@ -124,8 +147,13 @@ public abstract class AbstractTestIndexedQueries
     }
 
     @Test
+    public void testJoinWithNonJoinExpression()
+    {
+        assertQuery("SELECT COUNT(*) FROM lineitem JOIN orders ON lineitem.orderkey = orders.orderkey AND orders.custkey = 1");
+    }
+
+    @Test
     public void testPredicateDerivedKey()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -140,7 +168,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testCompoundPredicateDerivedKey()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -156,7 +183,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testChainedIndexJoin()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -172,7 +198,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testBasicLeftIndexJoin()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -186,7 +211,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testNonIndexLeftJoin()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -200,7 +224,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testBasicRightIndexJoin()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT COUNT(*)\n" +
@@ -214,7 +237,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testNonIndexRightJoin()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT COUNT(*)\n" +
@@ -228,7 +250,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testIndexJoinThroughAggregation()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -247,7 +268,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testIndexJoinThroughMultiKeyAggregation()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -266,7 +286,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testNonIndexableKeys()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -282,7 +301,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testComposableIndexJoins()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -300,7 +318,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testNonComposableIndexJoins()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -318,7 +335,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testOverlappingIndexJoinLookupSymbol()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -332,7 +348,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testOverlappingSourceOuterIndexJoinLookupSymbol()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -346,7 +361,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testOverlappingIndexJoinProbeSymbol()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -360,7 +374,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testOverlappingSourceOuterIndexJoinProbeSymbol()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -374,7 +387,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testRepeatedIndexJoinClause()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -391,7 +403,6 @@ public abstract class AbstractTestIndexedQueries
      */
     @Test
     public void testProbeNullInReadahead()
-            throws Exception
     {
         assertQuery(
                 "select count(*) from (values (1), (cast(null as bigint))) x(orderkey) join orders using (orderkey)",
@@ -400,7 +411,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testHighCardinalityIndexJoinResult()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -417,7 +427,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testReducedIndexProbeKey()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -434,7 +443,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testReducedIndexProbeKeyNegativeCaching()
-            throws Exception
     {
         // Not every column 'b' can be matched through the join
         assertQuery("" +
@@ -452,7 +460,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testHighCardinalityReducedIndexProbeKey()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT *\n" +
@@ -469,7 +476,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testReducedIndexProbeKeyComplexQueryShapes()
-            throws Exception
     {
         // Reduce the probe key through projections, aggregations, and joins
         assertQuery("" +
@@ -492,7 +498,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testIndexJoinConstantPropagation()
-            throws Exception
     {
         assertQuery("" +
                 "SELECT x, y, COUNT(*)\n" +
@@ -504,7 +509,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testIndexJoinThroughWindow()
-            throws Exception
     {
         assertQuery("" +
                         "SELECT *\n" +
@@ -530,7 +534,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testIndexJoinThroughWindowDoubleAggregation()
-            throws Exception
     {
         assertQuery("" +
                         "SELECT *\n" +
@@ -556,7 +559,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testIndexJoinThroughWindowPartialPartition()
-            throws Exception
     {
         assertQuery("" +
                         "SELECT *\n" +
@@ -582,7 +584,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testNoIndexJoinThroughWindowWithRowNumberFunction()
-            throws Exception
     {
         assertQuery("" +
                         "SELECT *\n" +
@@ -608,7 +609,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testNoIndexJoinThroughWindowWithOrderBy()
-            throws Exception
     {
         assertQuery("" +
                         "SELECT *\n" +
@@ -634,7 +634,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testNoIndexJoinThroughWindowWithRowFrame()
-            throws Exception
     {
         assertQuery("" +
                         "SELECT l.orderkey, o.c\n" +
@@ -660,7 +659,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testOuterNonEquiJoins()
-            throws Exception
     {
         assertQuery("SELECT COUNT(*) FROM lineitem LEFT OUTER JOIN orders ON lineitem.orderkey = orders.orderkey AND lineitem.quantity > 5 WHERE orders.orderkey IS NULL");
         assertQuery("SELECT COUNT(*) FROM orders RIGHT OUTER JOIN lineitem ON lineitem.orderkey = orders.orderkey AND lineitem.quantity > 5 WHERE orders.orderkey IS NULL");
@@ -668,7 +666,6 @@ public abstract class AbstractTestIndexedQueries
 
     @Test
     public void testNonEquiJoin()
-            throws Exception
     {
         assertQuery("SELECT COUNT(*) FROM lineitem JOIN orders ON lineitem.orderkey = orders.orderkey AND lineitem.quantity + length(orders.comment) > 7");
     }

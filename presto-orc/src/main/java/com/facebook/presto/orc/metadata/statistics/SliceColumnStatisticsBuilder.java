@@ -13,10 +13,28 @@
  */
 package com.facebook.presto.orc.metadata.statistics;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
 import io.airlift.slice.Slice;
 
 public interface SliceColumnStatisticsBuilder
         extends StatisticsBuilder
 {
-    void addValue(Slice value);
+    @Override
+    default void addBlock(Type type, Block block)
+    {
+        for (int position = 0; position < block.getPositionCount(); position++) {
+            if (!block.isNull(position)) {
+                Slice slice = type.getSlice(block, position);
+                addValue(slice, 0, slice.length());
+            }
+        }
+    }
+
+    default void addValue(Slice value)
+    {
+        addValue(value, 0, value.length());
+    }
+
+    void addValue(Slice value, int sourceIndex, int length);
 }

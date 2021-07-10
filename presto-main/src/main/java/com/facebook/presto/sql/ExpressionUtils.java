@@ -13,22 +13,17 @@
  */
 package com.facebook.presto.sql;
 
-import com.facebook.presto.sql.planner.DeterminismEvaluator;
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.planner.SymbolsExtractor;
+import com.facebook.presto.sql.planner.ExpressionDeterminismEvaluator;
 import com.facebook.presto.sql.tree.ComparisonExpression;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.ExpressionRewriter;
 import com.facebook.presto.sql.tree.ExpressionTreeRewriter;
 import com.facebook.presto.sql.tree.Identifier;
-import com.facebook.presto.sql.tree.IsNullPredicate;
 import com.facebook.presto.sql.tree.LambdaExpression;
 import com.facebook.presto.sql.tree.LogicalBinaryExpression;
 import com.facebook.presto.sql.tree.NotExpression;
 import com.facebook.presto.sql.tree.SymbolReference;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
 
 import java.util.ArrayDeque;
 import java.util.Arrays;
@@ -37,42 +32,41 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Queue;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static com.facebook.presto.sql.tree.BooleanLiteral.FALSE_LITERAL;
 import static com.facebook.presto.sql.tree.BooleanLiteral.TRUE_LITERAL;
-import static com.facebook.presto.sql.tree.ComparisonExpressionType.IS_DISTINCT_FROM;
-import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.facebook.presto.sql.tree.ComparisonExpression.Operator.IS_DISTINCT_FROM;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 
+@Deprecated
 public final class ExpressionUtils
 {
     private ExpressionUtils() {}
 
     public static List<Expression> extractConjuncts(Expression expression)
     {
-        return extractPredicates(LogicalBinaryExpression.Type.AND, expression);
+        return extractPredicates(LogicalBinaryExpression.Operator.AND, expression);
     }
 
     public static List<Expression> extractDisjuncts(Expression expression)
     {
-        return extractPredicates(LogicalBinaryExpression.Type.OR, expression);
+        return extractPredicates(LogicalBinaryExpression.Operator.OR, expression);
     }
 
     public static List<Expression> extractPredicates(LogicalBinaryExpression expression)
     {
-        return extractPredicates(expression.getType(), expression);
+        return extractPredicates(expression.getOperator(), expression);
     }
 
-    public static List<Expression> extractPredicates(LogicalBinaryExpression.Type type, Expression expression)
+    public static List<Expression> extractPredicates(LogicalBinaryExpression.Operator operator, Expression expression)
     {
-        if (expression instanceof LogicalBinaryExpression && ((LogicalBinaryExpression) expression).getType() == type) {
+        if (expression instanceof LogicalBinaryExpression && ((LogicalBinaryExpression) expression).getOperator() == operator) {
             LogicalBinaryExpression logicalBinaryExpression = (LogicalBinaryExpression) expression;
             return ImmutableList.<Expression>builder()
-                    .addAll(extractPredicates(type, logicalBinaryExpression.getLeft()))
-                    .addAll(extractPredicates(type, logicalBinaryExpression.getRight()))
+                    .addAll(extractPredicates(operator, logicalBinaryExpression.getLeft()))
+                    .addAll(extractPredicates(operator, logicalBinaryExpression.getRight()))
                     .build();
         }
 
@@ -86,7 +80,7 @@ public final class ExpressionUtils
 
     public static Expression and(Collection<Expression> expressions)
     {
-        return binaryExpression(LogicalBinaryExpression.Type.AND, expressions);
+        return binaryExpression(LogicalBinaryExpression.Operator.AND, expressions);
     }
 
     public static Expression or(Expression... expressions)
@@ -96,14 +90,24 @@ public final class ExpressionUtils
 
     public static Expression or(Collection<Expression> expressions)
     {
-        return binaryExpression(LogicalBinaryExpression.Type.OR, expressions);
+        return binaryExpression(LogicalBinaryExpression.Operator.OR, expressions);
     }
 
-    public static Expression binaryExpression(LogicalBinaryExpression.Type type, Collection<Expression> expressions)
+    public static Expression binaryExpression(LogicalBinaryExpression.Operator operator, Collection<Expression> expressions)
     {
-        requireNonNull(type, "type is null");
+        requireNonNull(operator, "operator is null");
         requireNonNull(expressions, "expressions is null");
-        Preconditions.checkArgument(!expressions.isEmpty(), "expressions is empty");
+
+        if (expressions.isEmpty()) {
+            switch (operator) {
+                case AND:
+                    return TRUE_LITERAL;
+                case OR:
+                    return FALSE_LITERAL;
+                default:
+                    throw new IllegalArgumentException("Unsupported LogicalBinaryExpression operator");
+            }
+        }
 
         // Build balanced tree for efficient recursive processing that
         // preserves the evaluation order of the input expressions.
@@ -141,7 +145,7 @@ public final class ExpressionUtils
 
             // combine pairs of elements
             while (queue.size() >= 2) {
-                buffer.add(new LogicalBinaryExpression(type, queue.remove(), queue.remove()));
+                buffer.add(new LogicalBinaryExpression(operator, queue.remove(), queue.remove()));
             }
 
             // if there's and odd number of elements, just append the last one
@@ -156,14 +160,14 @@ public final class ExpressionUtils
         return queue.remove();
     }
 
-    public static Expression combinePredicates(LogicalBinaryExpression.Type type, Expression... expressions)
+    public static Expression combinePredicates(LogicalBinaryExpression.Operator operator, Expression... expressions)
     {
-        return combinePredicates(type, Arrays.asList(expressions));
+        return combinePredicates(operator, Arrays.asList(expressions));
     }
 
-    public static Expression combinePredicates(LogicalBinaryExpression.Type type, Collection<Expression> expressions)
+    public static Expression combinePredicates(LogicalBinaryExpression.Operator operator, Collection<Expression> expressions)
     {
-        if (type == LogicalBinaryExpression.Type.AND) {
+        if (operator == LogicalBinaryExpression.Operator.AND) {
             return combineConjuncts(expressions);
         }
 
@@ -176,11 +180,6 @@ public final class ExpressionUtils
     }
 
     public static Expression combineConjuncts(Collection<Expression> expressions)
-    {
-        return combineConjunctsWithDefault(expressions, TRUE_LITERAL);
-    }
-
-    public static Expression combineConjunctsWithDefault(Collection<Expression> expressions, Expression emptyDefault)
     {
         requireNonNull(expressions, "expressions is null");
 
@@ -195,12 +194,7 @@ public final class ExpressionUtils
             return FALSE_LITERAL;
         }
 
-        return conjuncts.isEmpty() ? emptyDefault : and(conjuncts);
-    }
-
-    public static Expression combineDisjuncts(Expression... expressions)
-    {
-        return combineDisjuncts(Arrays.asList(expressions));
+        return and(conjuncts);
     }
 
     public static Expression combineDisjuncts(Collection<Expression> expressions)
@@ -226,48 +220,13 @@ public final class ExpressionUtils
         return disjuncts.isEmpty() ? emptyDefault : or(disjuncts);
     }
 
-    public static Expression stripNonDeterministicConjuncts(Expression expression)
+    public static Expression filterConjuncts(Expression expression, Predicate<Expression> predicate)
     {
         List<Expression> conjuncts = extractConjuncts(expression).stream()
-                .filter(DeterminismEvaluator::isDeterministic)
+                .filter(predicate)
                 .collect(toList());
 
         return combineConjuncts(conjuncts);
-    }
-
-    public static Expression stripDeterministicConjuncts(Expression expression)
-    {
-        return combineConjuncts(extractConjuncts(expression)
-                .stream()
-                .filter((conjunct) -> !DeterminismEvaluator.isDeterministic(conjunct))
-                .collect(toImmutableList()));
-    }
-
-    public static Function<Expression, Expression> expressionOrNullSymbols(final Predicate<Symbol>... nullSymbolScopes)
-    {
-        return expression -> {
-            ImmutableList.Builder<Expression> resultDisjunct = ImmutableList.builder();
-            resultDisjunct.add(expression);
-
-            for (Predicate<Symbol> nullSymbolScope : nullSymbolScopes) {
-                List<Symbol> symbols = SymbolsExtractor.extractUnique(expression).stream()
-                        .filter(nullSymbolScope)
-                        .collect(toImmutableList());
-
-                if (Iterables.isEmpty(symbols)) {
-                    continue;
-                }
-
-                ImmutableList.Builder<Expression> nullConjuncts = ImmutableList.builder();
-                for (Symbol symbol : symbols) {
-                    nullConjuncts.add(new IsNullPredicate(symbol.toSymbolReference()));
-                }
-
-                resultDisjunct.add(and(nullConjuncts.build()));
-            }
-
-            return or(resultDisjunct.build());
-        };
     }
 
     /**
@@ -280,7 +239,7 @@ public final class ExpressionUtils
 
         ImmutableList.Builder<Expression> result = ImmutableList.builder();
         for (Expression expression : expressions) {
-            if (!DeterminismEvaluator.isDeterministic(expression)) {
+            if (!ExpressionDeterminismEvaluator.isDeterministic(expression)) {
                 result.add(expression);
             }
             else if (!seen.contains(expression)) {
@@ -296,9 +255,9 @@ public final class ExpressionUtils
     {
         if (expression instanceof NotExpression) {
             NotExpression not = (NotExpression) expression;
-            if (not.getValue() instanceof ComparisonExpression && ((ComparisonExpression) not.getValue()).getType() != IS_DISTINCT_FROM) {
+            if (not.getValue() instanceof ComparisonExpression && ((ComparisonExpression) not.getValue()).getOperator() != IS_DISTINCT_FROM) {
                 ComparisonExpression comparison = (ComparisonExpression) not.getValue();
-                return new ComparisonExpression(comparison.getType().negate(), comparison.getLeft(), comparison.getRight());
+                return new ComparisonExpression(comparison.getOperator().negate(), comparison.getLeft(), comparison.getRight());
             }
             if (not.getValue() instanceof NotExpression) {
                 return normalize(((NotExpression) not.getValue()).getValue());

@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.operator.scalar;
 
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Measurement;
@@ -51,7 +51,7 @@ public class BenchmarkRoundFunction
     private float floatOperand4;
 
     @Param({"0", "1", "2", "3", "4"})
-    private int numberOfDecimals = 0;
+    private int numberOfDecimals;
 
     @Setup
     public void setup()

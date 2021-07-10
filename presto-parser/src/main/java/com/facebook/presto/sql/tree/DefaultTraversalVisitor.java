@@ -13,8 +13,6 @@
  */
 package com.facebook.presto.sql.tree;
 
-import java.util.Set;
-
 public abstract class DefaultTraversalVisitor<R, C>
         extends AstVisitor<R, C>
 {
@@ -167,6 +165,10 @@ public abstract class DefaultTraversalVisitor<R, C>
     {
         for (Expression argument : node.getArguments()) {
             process(argument, context);
+        }
+
+        if (node.getOrderBy().isPresent()) {
+            process(node.getOrderBy().get(), context);
         }
 
         if (node.getWindow().isPresent()) {
@@ -328,9 +330,7 @@ public abstract class DefaultTraversalVisitor<R, C>
     {
         process(node.getValue(), context);
         process(node.getPattern(), context);
-        if (node.getEscape() != null) {
-            process(node.getEscape(), context);
-        }
+        node.getEscape().ifPresent(value -> process(value, context));
 
         return null;
     }
@@ -480,13 +480,30 @@ public abstract class DefaultTraversalVisitor<R, C>
     }
 
     @Override
-    protected R visitGroupingElement(GroupingElement node, C context)
+    protected R visitCube(Cube node, C context)
     {
-        for (Set<Expression> expressions : node.enumerateGroupingSets()) {
-            for (Expression expression : expressions) {
-                process(expression, context);
-            }
+        return null;
+    }
+
+    @Override
+    protected R visitRollup(Rollup node, C context)
+    {
+        return null;
+    }
+
+    @Override
+    protected R visitSimpleGroupBy(SimpleGroupBy node, C context)
+    {
+        for (Expression expression : node.getExpressions()) {
+            process(expression, context);
         }
+
+        return null;
+    }
+
+    @Override
+    protected R visitGroupingSets(GroupingSets node, C context)
+    {
         return null;
     }
 
@@ -528,9 +545,38 @@ public abstract class DefaultTraversalVisitor<R, C>
     }
 
     @Override
+    protected R visitAnalyze(Analyze node, C context)
+    {
+        for (Property property : node.getProperties()) {
+            process(property, context);
+        }
+        return null;
+    }
+
+    @Override
     protected R visitCreateView(CreateView node, C context)
     {
         process(node.getQuery(), context);
+
+        return null;
+    }
+
+    @Override
+    protected R visitCreateMaterializedView(CreateMaterializedView node, C context)
+    {
+        process(node.getQuery(), context);
+        for (Property property : node.getProperties()) {
+            process(property, context);
+        }
+
+        return null;
+    }
+
+    @Override
+    protected R visitRefreshMaterializedView(RefreshMaterializedView node, C context)
+    {
+        process(node.getTarget(), context);
+        process(node.getWhere(), context);
 
         return null;
     }
@@ -559,20 +605,6 @@ public abstract class DefaultTraversalVisitor<R, C>
         }
         for (Property property : node.getProperties()) {
             process(property, context);
-        }
-
-        return null;
-    }
-
-    @Override
-    protected R visitShowPartitions(ShowPartitions node, C context)
-    {
-        if (node.getWhere().isPresent()) {
-            process(node.getWhere().get(), context);
-        }
-
-        for (SortItem sortItem : node.getOrderBy()) {
-            process(sortItem, context);
         }
 
         return null;

@@ -14,7 +14,7 @@
 package com.facebook.presto.accumulo.model;
 
 import com.facebook.presto.accumulo.serializers.AccumuloRowSerializer;
-import com.facebook.presto.spi.type.ArrayType;
+import com.facebook.presto.common.type.ArrayType;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
 
@@ -23,18 +23,18 @@ import java.sql.Timestamp;
 import java.util.GregorianCalendar;
 import java.util.Optional;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimeType.TIME;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimeType.TIME;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.testng.Assert.assertEquals;
 
@@ -42,7 +42,6 @@ public class TestRow
 {
     @Test
     public void testRow()
-            throws Exception
     {
         Row r1 = new Row();
         r1.addField(new Field(AccumuloRowSerializer.getBlockFromArray(VARCHAR, ImmutableList.of("a", "b", "c")), new ArrayType(VARCHAR)));
@@ -69,7 +68,6 @@ public class TestRow
 
     @Test(expectedExceptions = NullPointerException.class, expectedExceptionsMessageRegExp = "type is null")
     public void testRowTypeIsNull()
-            throws Exception
     {
         Row r1 = new Row();
         r1.addField(VARCHAR, null);
@@ -77,7 +75,6 @@ public class TestRow
 
     @Test
     public void testRowFromString()
-            throws Exception
     {
         Row expected = new Row();
         expected.addField(new Field(AccumuloRowSerializer.getBlockFromArray(VARCHAR, ImmutableList.of("a", "b", "c")), new ArrayType(VARCHAR)));
@@ -111,7 +108,7 @@ public class TestRow
         schema.addColumn("m", Optional.of("m"), Optional.of("m"), VARCHAR);
         schema.addColumn("n", Optional.of("n"), Optional.of("n"), VARCHAR);
 
-        Row actual = Row.fromString(schema, "a,b,c|true|1999-01-01|123.45678|123.45678|12345678|12345678|12345|12:30:00|1999-01-01 12:30:00.0|123|O'Leary|O'Leary|", '|');
+        Row actual = Row.fromString(schema, "a,b,c|true|1999-01-01|123.45678|123.45678|12345678|12345678|12345|12:30:00|1999-01-01 12:30:00.000|123|O'Leary|O'Leary|", '|');
         assertEquals(actual, expected);
     }
 }

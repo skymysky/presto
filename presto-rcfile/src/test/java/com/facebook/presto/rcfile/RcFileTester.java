@@ -13,32 +13,26 @@
  */
 package com.facebook.presto.rcfile;
 
-import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.SqlDate;
+import com.facebook.presto.common.type.SqlDecimal;
+import com.facebook.presto.common.type.SqlTimestamp;
+import com.facebook.presto.common.type.SqlVarbinary;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.hadoop.HadoopNative;
-import com.facebook.presto.metadata.FunctionRegistry;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.rcfile.binary.BinaryRcFileEncoding;
 import com.facebook.presto.rcfile.text.TextRcFileEncoding;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.Decimals;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.RowType;
-import com.facebook.presto.spi.type.SqlDate;
-import com.facebook.presto.spi.type.SqlDecimal;
-import com.facebook.presto.spi.type.SqlTimestamp;
-import com.facebook.presto.spi.type.SqlVarbinary;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
-import com.facebook.presto.spi.type.VarcharType;
-import com.facebook.presto.sql.analyzer.FeaturesConfig;
-import com.facebook.presto.type.TypeRegistry;
-import com.google.common.base.Throwables;
 import com.google.common.collect.AbstractIterator;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -103,6 +97,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.math.BigInteger;
 import java.sql.Date;
 import java.sql.Timestamp;
@@ -123,6 +118,23 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.Decimals.rescale;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.StandardTypes.ARRAY;
+import static com.facebook.presto.common.type.StandardTypes.MAP;
+import static com.facebook.presto.common.type.StandardTypes.ROW;
+import static com.facebook.presto.common.type.TimeZoneKey.UTC_KEY;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static com.facebook.presto.rcfile.RcFileDecoderUtils.findFirstSyncPosition;
 import static com.facebook.presto.rcfile.RcFileTester.Compression.BZIP2;
 import static com.facebook.presto.rcfile.RcFileTester.Compression.LZ4;
@@ -131,22 +143,6 @@ import static com.facebook.presto.rcfile.RcFileTester.Compression.SNAPPY;
 import static com.facebook.presto.rcfile.RcFileTester.Compression.ZLIB;
 import static com.facebook.presto.rcfile.RcFileWriter.PRESTO_RCFILE_WRITER_VERSION;
 import static com.facebook.presto.rcfile.RcFileWriter.PRESTO_RCFILE_WRITER_VERSION_METADATA_KEY;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.Decimals.rescale;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.StandardTypes.ARRAY;
-import static com.facebook.presto.spi.type.StandardTypes.MAP;
-import static com.facebook.presto.spi.type.StandardTypes.ROW;
-import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static com.google.common.base.Functions.constant;
 import static com.google.common.collect.Iterables.transform;
@@ -189,22 +185,18 @@ import static org.testng.Assert.assertTrue;
 @SuppressWarnings("StaticPseudoFunctionalStyleMethod")
 public class RcFileTester
 {
-    private static final TypeManager TYPE_MANAGER = new TypeRegistry();
+    private static final FunctionAndTypeManager FUNCTION_AND_TYPE_MANAGER = createTestFunctionAndTypeManager();
 
     static {
-        // associate TYPE_MANAGER with a function registry
-        new FunctionRegistry(TYPE_MANAGER, new BlockEncodingManager(TYPE_MANAGER), new FeaturesConfig());
-
         HadoopNative.requireHadoopNative();
     }
 
-    public static final DateTimeZone HIVE_STORAGE_TIME_ZONE = DateTimeZone.forID("Asia/Katmandu");
+    public static final DateTimeZone HIVE_STORAGE_TIME_ZONE = DateTimeZone.forID("America/Bahia_Banderas");
 
     public enum Format
     {
         BINARY {
             @Override
-            @SuppressWarnings("deprecation")
             public Serializer createSerializer()
             {
                 return new LazyBinaryColumnarSerDe();
@@ -219,7 +211,6 @@ public class RcFileTester
 
         TEXT {
             @Override
-            @SuppressWarnings("deprecation")
             public Serializer createSerializer()
             {
                 try {
@@ -231,7 +222,7 @@ public class RcFileTester
                     return columnarSerDe;
                 }
                 catch (SerDeException e) {
-                    throw Throwables.propagate(e);
+                    throw new RuntimeException(e);
                 }
             }
 
@@ -242,7 +233,6 @@ public class RcFileTester
             }
         };
 
-        @SuppressWarnings("deprecation")
         public abstract Serializer createSerializer();
 
         public abstract RcFileEncoding getVectorEncoding();
@@ -353,7 +343,7 @@ public class RcFileTester
         if (complexStructuralTestsEnabled) {
             Iterable<Object> simpleStructs = transform(insertNullEvery(5, writeValues), RcFileTester::toHiveStruct);
             testRoundTripType(
-                    new RowType(ImmutableList.of(createRowType(type)), Optional.of(ImmutableList.of("field"))),
+                    RowType.from(ImmutableList.of(RowType.field("field", createRowType(type)))),
                     transform(simpleStructs, Collections::singletonList),
                     skipFormatsSet);
         }
@@ -483,7 +473,7 @@ public class RcFileTester
 
                     List<Object> data = new ArrayList<>(block.getPositionCount());
                     for (int position = 0; position < block.getPositionCount(); position++) {
-                        data.add(type.getObjectValue(SESSION, block, position));
+                        data.add(type.getObjectValue(SESSION.getSqlFunctionProperties(), block, position));
                     }
 
                     for (int i = 0; i < batchSize; i++) {
@@ -588,7 +578,7 @@ public class RcFileTester
             slice.setBytes(0, in, slice.length());
         }
         catch (IOException e) {
-            throw Throwables.propagate(e);
+            throw new UncheckedIOException(e);
         }
 
         List<Long> syncPositionsBruteForce = new ArrayList<>();
@@ -668,7 +658,7 @@ public class RcFileTester
                 new DataSize(100, KILOBYTE),   // use a smaller size to create more row groups
                 new DataSize(200, KILOBYTE),
                 true);
-        BlockBuilder blockBuilder = type.createBlockBuilder(new BlockBuilderStatus(), 1024);
+        BlockBuilder blockBuilder = type.createBlockBuilder(null, 1024);
         while (values.hasNext()) {
             Object value = values.next();
             writeValue(type, blockBuilder, value);
@@ -783,7 +773,6 @@ public class RcFileTester
         schema.setProperty(META_TABLE_COLUMNS, "test");
         schema.setProperty(META_TABLE_COLUMN_TYPES, getJavaObjectInspector(type).getTypeName());
 
-        @SuppressWarnings("deprecation")
         Deserializer deserializer;
         if (format == Format.BINARY) {
             deserializer = new LazyBinaryColumnarSerDe();
@@ -862,7 +851,12 @@ public class RcFileTester
         }
         else if (actualValue instanceof TimestampWritable) {
             TimestampWritable timestamp = (TimestampWritable) actualValue;
-            actualValue = new SqlTimestamp((timestamp.getSeconds() * 1000) + (timestamp.getNanos() / 1000000L), UTC_KEY);
+            if (SESSION.getSqlFunctionProperties().isLegacyTimestamp()) {
+                actualValue = new SqlTimestamp((timestamp.getSeconds() * 1000) + (timestamp.getNanos() / 1000000L), UTC_KEY);
+            }
+            else {
+                actualValue = new SqlTimestamp((timestamp.getSeconds() * 1000) + (timestamp.getNanos() / 1000000L));
+            }
         }
         else if (actualValue instanceof StructObject) {
             StructObject structObject = (StructObject) actualValue;
@@ -927,7 +921,7 @@ public class RcFileTester
         Object row = objectInspector.create();
 
         List<StructField> fields = ImmutableList.copyOf(objectInspector.getAllStructFieldRefs());
-        @SuppressWarnings("deprecation") Serializer serializer = format.createSerializer();
+        Serializer serializer = format.createSerializer();
 
         Properties tableProperties = new Properties();
         tableProperties.setProperty("columns", "test");
@@ -997,7 +991,7 @@ public class RcFileTester
         else if (type.getTypeSignature().getBase().equals(ROW)) {
             return getStandardStructObjectInspector(
                     type.getTypeSignature().getParameters().stream()
-                            .map(parameter -> parameter.getNamedTypeSignature().getName())
+                            .map(parameter -> parameter.getNamedTypeSignature().getName().get())
                             .collect(toList()),
                     type.getTypeParameters().stream()
                             .map(RcFileTester::getJavaObjectInspector)
@@ -1169,7 +1163,10 @@ public class RcFileTester
 
     private static RowType createRowType(Type type)
     {
-        return new RowType(ImmutableList.of(type, type, type), Optional.of(ImmutableList.of("a", "b", "c")));
+        return RowType.from(ImmutableList.of(
+                RowType.field("a", type),
+                RowType.field("b", type),
+                RowType.field("c", type)));
     }
 
     private static Object toHiveStruct(Object input)
@@ -1183,7 +1180,7 @@ public class RcFileTester
 
     private static MapType createMapType(Type type)
     {
-        return (MapType) TYPE_MANAGER.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+        return (MapType) FUNCTION_AND_TYPE_MANAGER.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
                 TypeSignatureParameter.of(type.getTypeSignature()),
                 TypeSignatureParameter.of(type.getTypeSignature())));
     }

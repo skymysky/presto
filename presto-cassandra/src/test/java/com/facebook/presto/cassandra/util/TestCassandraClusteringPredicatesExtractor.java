@@ -19,15 +19,15 @@ import com.facebook.presto.cassandra.CassandraColumnHandle;
 import com.facebook.presto.cassandra.CassandraTable;
 import com.facebook.presto.cassandra.CassandraTableHandle;
 import com.facebook.presto.cassandra.CassandraType;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ColumnHandle;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static org.testng.Assert.assertEquals;
 
 public class TestCassandraClusteringPredicatesExtractor
@@ -41,7 +41,6 @@ public class TestCassandraClusteringPredicatesExtractor
 
     @BeforeTest
     void setUp()
-            throws Exception
     {
         col1 = new CassandraColumnHandle("cassandra", "partitionKey1", 1, CassandraType.BIGINT, null, true, false, false, false);
         col2 = new CassandraColumnHandle("cassandra", "clusteringKey1", 2, CassandraType.BIGINT, null, false, true, false, false);

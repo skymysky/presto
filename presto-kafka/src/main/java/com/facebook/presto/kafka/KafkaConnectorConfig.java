@@ -13,20 +13,17 @@
  */
 package com.facebook.presto.kafka;
 
+import com.facebook.airlift.configuration.Config;
+import com.facebook.presto.kafka.schema.file.FileTableDescriptionSupplier;
 import com.facebook.presto.spi.HostAddress;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.configuration.Config;
-import io.airlift.units.DataSize;
-import io.airlift.units.DataSize.Unit;
 import io.airlift.units.Duration;
 import io.airlift.units.MinDuration;
 
 import javax.validation.constraints.NotNull;
-import javax.validation.constraints.Size;
 
-import java.io.File;
-import java.util.Set;
+import java.util.List;
 
 import static com.google.common.collect.Iterables.transform;
 
@@ -37,7 +34,7 @@ public class KafkaConnectorConfig
     /**
      * Seed nodes for Kafka cluster. At least one must exist.
      */
-    private Set<HostAddress> nodes = ImmutableSet.of();
+    private List<HostAddress> nodes;
 
     /**
      * Timeout to connect to Kafka.
@@ -45,55 +42,29 @@ public class KafkaConnectorConfig
     private Duration kafkaConnectTimeout = Duration.valueOf("10s");
 
     /**
-     * Buffer size for connecting to Kafka.
-     */
-    private DataSize kafkaBufferSize = new DataSize(64, Unit.KILOBYTE);
-
-    /**
      * The schema name to use in the connector.
      */
     private String defaultSchema = "default";
-
-    /**
-     * Set of tables known to this connector. For each table, a description file may be present in the catalog folder which describes columns for the given topic.
-     */
-    private Set<String> tableNames = ImmutableSet.of();
-
-    /**
-     * Folder holding the JSON description files for Kafka topics.
-     */
-    private File tableDescriptionDir = new File("etc/kafka/");
 
     /**
      * Whether internal columns are shown in table metadata or not. Default is no.
      */
     private boolean hideInternalColumns = true;
 
-    @NotNull
-    public File getTableDescriptionDir()
-    {
-        return tableDescriptionDir;
-    }
+    /**
+     * Maximum number of records per poll()
+     */
+    private int maxPollRecords = 500;
 
-    @Config("kafka.table-description-dir")
-    public KafkaConnectorConfig setTableDescriptionDir(File tableDescriptionDir)
-    {
-        this.tableDescriptionDir = tableDescriptionDir;
-        return this;
-    }
+    /**
+     * Maximum number of bytes from one partition per poll()
+     */
+    private int maxPartitionFetchBytes = 1024 * 1024;
 
-    @NotNull
-    public Set<String> getTableNames()
-    {
-        return tableNames;
-    }
-
-    @Config("kafka.table-names")
-    public KafkaConnectorConfig setTableNames(String tableNames)
-    {
-        this.tableNames = ImmutableSet.copyOf(Splitter.on(',').omitEmptyStrings().trimResults().split(tableNames));
-        return this;
-    }
+    /**
+     * The table description supplier to use, default is FILE
+     */
+    private String tableDescriptionSupplier = FileTableDescriptionSupplier.NAME;
 
     @NotNull
     public String getDefaultSchema()
@@ -108,8 +79,7 @@ public class KafkaConnectorConfig
         return this;
     }
 
-    @Size(min = 1)
-    public Set<HostAddress> getNodes()
+    public List<HostAddress> getNodes()
     {
         return nodes;
     }
@@ -117,7 +87,7 @@ public class KafkaConnectorConfig
     @Config("kafka.nodes")
     public KafkaConnectorConfig setNodes(String nodes)
     {
-        this.nodes = (nodes == null) ? null : parseNodes(nodes);
+        this.nodes = (nodes == null) ? null : parseNodes(nodes).asList();
         return this;
     }
 
@@ -134,15 +104,40 @@ public class KafkaConnectorConfig
         return this;
     }
 
-    public DataSize getKafkaBufferSize()
+    public int getMaxPollRecords()
     {
-        return kafkaBufferSize;
+        return maxPollRecords;
     }
 
-    @Config("kafka.buffer-size")
-    public KafkaConnectorConfig setKafkaBufferSize(String kafkaBufferSize)
+    @Config("kafka.max-poll-records")
+    public KafkaConnectorConfig setMaxPollRecords(int maxPollRecords)
     {
-        this.kafkaBufferSize = DataSize.valueOf(kafkaBufferSize);
+        this.maxPollRecords = maxPollRecords;
+        return this;
+    }
+
+    public int getMaxPartitionFetchBytes()
+    {
+        return maxPartitionFetchBytes;
+    }
+
+    @Config("kafka.max-partition-fetch-bytes")
+    public KafkaConnectorConfig setMaxPartitionFetchBytes(int maxPartitionFetchBytes)
+    {
+        this.maxPartitionFetchBytes = maxPartitionFetchBytes;
+        return this;
+    }
+
+    @NotNull
+    public String getTableDescriptionSupplier()
+    {
+        return tableDescriptionSupplier;
+    }
+
+    @Config("kafka.table-description-supplier")
+    public KafkaConnectorConfig setTableDescriptionSupplier(String tableDescriptionSupplier)
+    {
+        this.tableDescriptionSupplier = tableDescriptionSupplier;
         return this;
     }
 

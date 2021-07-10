@@ -13,15 +13,12 @@
  */
 package com.facebook.presto.resourceGroups.db;
 
-import io.airlift.configuration.Config;
-
-import javax.validation.constraints.NotNull;
+import com.facebook.airlift.configuration.Config;
 
 public class DbResourceGroupConfig
 {
     private String configUrl;
 
-    @NotNull
     public String getConfigDbUrl()
     {
         return configUrl;

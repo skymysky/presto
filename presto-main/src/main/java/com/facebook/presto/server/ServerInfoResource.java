@@ -13,11 +13,13 @@
  */
 package com.facebook.presto.server;
 
+import com.facebook.airlift.node.NodeInfo;
 import com.facebook.presto.client.NodeVersion;
 import com.facebook.presto.client.ServerInfo;
+import com.facebook.presto.metadata.StaticCatalogStore;
 import com.facebook.presto.spi.NodeState;
-import io.airlift.node.NodeInfo;
 
+import javax.annotation.security.RolesAllowed;
 import javax.inject.Inject;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.GET;
@@ -30,7 +32,9 @@ import javax.ws.rs.core.Response;
 
 import java.util.Optional;
 
+import static com.facebook.presto.server.security.RoleType.ADMIN;
 import static com.facebook.presto.spi.NodeState.ACTIVE;
+import static com.facebook.presto.spi.NodeState.INACTIVE;
 import static com.facebook.presto.spi.NodeState.SHUTTING_DOWN;
 import static io.airlift.units.Duration.nanosSince;
 import static java.lang.String.format;
@@ -45,29 +49,37 @@ public class ServerInfoResource
     private final NodeVersion version;
     private final String environment;
     private final boolean coordinator;
+    private final boolean resourceManager;
+    private final StaticCatalogStore catalogStore;
     private final GracefulShutdownHandler shutdownHandler;
     private final long startTime = System.nanoTime();
+    private final NodeResourceStatusProvider nodeResourceStatusProvider;
 
     @Inject
-    public ServerInfoResource(NodeVersion nodeVersion, NodeInfo nodeInfo, ServerConfig serverConfig, GracefulShutdownHandler shutdownHandler)
+    public ServerInfoResource(NodeVersion nodeVersion, NodeInfo nodeInfo, ServerConfig serverConfig, StaticCatalogStore catalogStore, GracefulShutdownHandler shutdownHandler, NodeResourceStatusProvider nodeResourceStatusProvider)
     {
         this.version = requireNonNull(nodeVersion, "nodeVersion is null");
         this.environment = requireNonNull(nodeInfo, "nodeInfo is null").getEnvironment();
         this.coordinator = requireNonNull(serverConfig, "serverConfig is null").isCoordinator();
+        this.resourceManager = serverConfig.isResourceManager();
+        this.catalogStore = requireNonNull(catalogStore, "catalogStore is null");
         this.shutdownHandler = requireNonNull(shutdownHandler, "shutdownHandler is null");
+        this.nodeResourceStatusProvider = requireNonNull(nodeResourceStatusProvider, "nodeResourceStatusProvider is null");
     }
 
     @GET
     @Produces(APPLICATION_JSON)
     public ServerInfo getInfo()
     {
-        return new ServerInfo(version, environment, coordinator, Optional.of(nanosSince(startTime)));
+        boolean starting = resourceManager ? true : !catalogStore.areCatalogsLoaded();
+        return new ServerInfo(version, environment, coordinator, starting, Optional.of(nanosSince(startTime)));
     }
 
     @PUT
     @Path("state")
     @Consumes(APPLICATION_JSON)
     @Produces(TEXT_PLAIN)
+    @RolesAllowed(ADMIN)
     public Response updateState(NodeState state)
             throws WebApplicationException
     {
@@ -94,19 +106,26 @@ public class ServerInfoResource
     @GET
     @Path("state")
     @Produces(APPLICATION_JSON)
+    @RolesAllowed(ADMIN)
     public NodeState getServerState()
     {
         if (shutdownHandler.isShutdownRequested()) {
             return SHUTTING_DOWN;
         }
         else {
-            return ACTIVE;
+            if (nodeResourceStatusProvider.hasResources()) {
+                return ACTIVE;
+            }
+            else {
+                return INACTIVE;
+            }
         }
     }
 
     @GET
     @Path("coordinator")
     @Produces(TEXT_PLAIN)
+    @RolesAllowed(ADMIN)
     public Response getServerCoordinator()
     {
         if (coordinator) {

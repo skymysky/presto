@@ -13,10 +13,13 @@
  */
 package com.facebook.presto.spi.connector;
 
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
-import com.facebook.presto.spi.ColumnIdentity;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
+import com.facebook.presto.spi.ConnectorMaterializedViewDefinition;
+import com.facebook.presto.spi.ConnectorMetadataUpdateHandle;
 import com.facebook.presto.spi.ConnectorNewTableLayout;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
 import com.facebook.presto.spi.ConnectorResolvedIndex;
@@ -28,14 +31,21 @@ import com.facebook.presto.spi.ConnectorTableLayoutResult;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.ConnectorViewDefinition;
 import com.facebook.presto.spi.Constraint;
+import com.facebook.presto.spi.MaterializedViewStatus;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
-import com.facebook.presto.spi.TableIdentity;
-import com.facebook.presto.spi.predicate.TupleDomain;
+import com.facebook.presto.spi.SystemTable;
+import com.facebook.presto.spi.TableLayoutFilterCoverage;
+import com.facebook.presto.spi.api.Experimental;
 import com.facebook.presto.spi.security.GrantInfo;
+import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.Privilege;
+import com.facebook.presto.spi.security.RoleGrant;
+import com.facebook.presto.spi.statistics.ComputedStatistics;
 import com.facebook.presto.spi.statistics.TableStatistics;
+import com.facebook.presto.spi.statistics.TableStatisticsMetadata;
 import io.airlift.slice.Slice;
 
 import java.util.Collection;
@@ -44,11 +54,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.statistics.TableStatistics.EMPTY_STATISTICS;
+import static com.facebook.presto.spi.TableLayoutFilterCoverage.NOT_APPLICABLE;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
 import static java.util.stream.Collectors.toList;
@@ -75,6 +86,26 @@ public interface ConnectorMetadata
     ConnectorTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName);
 
     /**
+     * Returns a table handle for the specified table name, or null if the connector does not contain the table.
+     * The returned table handle can contain information in analyzeProperties.
+     */
+    default ConnectorTableHandle getTableHandleForStatisticsCollection(ConnectorSession session, SchemaTableName tableName, Map<String, Object> analyzeProperties)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support analyze");
+    }
+
+    /**
+     * Returns the system table for the specified table name, if one exists.
+     * The system tables handled via {@link #getSystemTable} differ form those returned by {@link Connector#getSystemTables()}.
+     * The former mechanism allows dynamic resolution of system tables, while the latter is
+     * based on static list of system tables built during startup.
+     */
+    default Optional<SystemTable> getSystemTable(ConnectorSession session, SchemaTableName tableName)
+    {
+        return Optional.empty();
+    }
+
+    /**
      * Return a list of table layouts that satisfy the given constraint.
      * <p>
      * For each layout, connectors must return an "unenforced constraint" representing the part of the constraint summary that isn't guaranteed by the layout.
@@ -86,6 +117,82 @@ public interface ConnectorMetadata
             Optional<Set<ColumnHandle>> desiredColumns);
 
     ConnectorTableLayout getTableLayout(ConnectorSession session, ConnectorTableLayoutHandle handle);
+
+    /**
+     * Return a table layout handle whose partitioning is converted to the provided partitioning handle,
+     * but otherwise identical to the provided table layout handle.
+     * The provided table layout handle must be one that the connector can transparently convert to from
+     * the original partitioning handle associated with the provided table layout handle,
+     * as promised by {@link #getCommonPartitioningHandle}.
+     */
+    default ConnectorTableLayoutHandle getAlternativeLayoutHandle(ConnectorSession session, ConnectorTableLayoutHandle tableLayoutHandle, ConnectorPartitioningHandle partitioningHandle)
+    {
+        throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata getCommonPartitioningHandle() is implemented without getAlternativeLayout()");
+    }
+
+    /**
+     * Experimental: if true, the engine will invoke getLayout otherwise, getLayout will not be called.
+     */
+    @Deprecated
+    @Experimental
+    default boolean isLegacyGetLayoutSupported(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        return true;
+    }
+
+    /**
+     * Return a partitioning handle which the connector can transparently convert both {@code left} and {@code right} into.
+     */
+    @Deprecated
+    default Optional<ConnectorPartitioningHandle> getCommonPartitioningHandle(ConnectorSession session, ConnectorPartitioningHandle left, ConnectorPartitioningHandle right)
+    {
+        if (left.equals(right)) {
+            return Optional.of(left);
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Partitioning <code>a = {a_1, ... a_n}</code> is considered as a refined partitioning over
+     * partitioning <code>b = {b_1, ... b_m}</code> if:
+     * <ul>
+     * <li> n >= m </li>
+     * <li> For every partition <code>b_i</code> in partitioning <code>b</code>,
+     * the rows it contains is the same as union of a set of partitions <code>a_{i_1}, a_{i_2}, ... a_{i_k}</code>
+     * in partitioning <code>a</code>, i.e.
+     * <p>
+     * <code>b_i = a_{i_1} + a_{i_2} + ... + a_{i_k}</code>
+     * <li> Connector can transparently convert partitioning <code>a</code> to partitioning <code>b</code>
+     * associated with the provided table layout handle.
+     * </ul>
+     *
+     * <p>
+     * For example, consider two partitioning over <code>order</code> table:
+     * <ul>
+     * <li> partitioning <code>a</code> has 256 partitions by <code>orderkey % 256</code>
+     * <li> partitioning <code>b</code> has 128 partitions by <code>orderkey % 128</code>
+     * </ul>
+     *
+     * <p>
+     * Partitioning <code>a</code> is a refined partitioning over <code>b</code> if Connector supports
+     * transparently convert <code>a</code> to <code>b</code>.
+     * <p>
+     * Refined-over relation is reflexive.
+     * <p>
+     * This SPI is unstable and subject to change in the future.
+     */
+    default boolean isRefinedPartitioningOver(ConnectorSession session, ConnectorPartitioningHandle left, ConnectorPartitioningHandle right)
+    {
+        return left.equals(right);
+    }
+
+    /**
+     * Provides partitioning handle for exchange.
+     */
+    default ConnectorPartitioningHandle getPartitioningHandleForExchange(ConnectorSession session, int partitionCount, List<Type> partitionTypes)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support custom partitioning");
+    }
 
     /**
      * Return the metadata for the specified table handle.
@@ -106,8 +213,22 @@ public interface ConnectorMetadata
 
     /**
      * List table names, possibly filtered by schema. An empty list is returned if none match.
+     *
+     * @deprecated replaced by {@link ConnectorMetadata#listTables(ConnectorSession, Optional)}
      */
-    List<SchemaTableName> listTables(ConnectorSession session, String schemaNameOrNull);
+    @Deprecated
+    default List<SchemaTableName> listTables(ConnectorSession session, String schemaNameOrNull)
+    {
+        return emptyList();
+    }
+
+    /**
+     * List table names, possibly filtered by schema. An empty list is returned if none match.
+     */
+    default List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName)
+    {
+        return listTables(session, schemaName.orElse(null));
+    }
 
     /**
      * Gets all of the columns on the specified table, or an empty map if the columns can not be enumerated.
@@ -124,16 +245,24 @@ public interface ConnectorMetadata
     ColumnMetadata getColumnMetadata(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle columnHandle);
 
     /**
+     * Returns a TupleDomain of constraints that is suitable for ExplainIO
+     */
+    default TupleDomain<ColumnHandle> toExplainIOConstraints(ConnectorSession session, ConnectorTableHandle tableHandle, TupleDomain<ColumnHandle> constraints)
+    {
+        return constraints;
+    }
+
+    /**
      * Gets the metadata for all columns that match the specified table prefix.
      */
     Map<SchemaTableName, List<ColumnMetadata>> listTableColumns(ConnectorSession session, SchemaTablePrefix prefix);
 
     /**
-     * Get statistics for table for given filtering constraint.
+     * Get statistics for table for given columns and filtering constraint.
      */
-    default TableStatistics getTableStatistics(ConnectorSession session, ConnectorTableHandle tableHandle, Constraint<ColumnHandle> constraint)
+    default TableStatistics getTableStatistics(ConnectorSession session, ConnectorTableHandle tableHandle, Optional<ConnectorTableLayoutHandle> tableLayoutHandle, List<ColumnHandle> columnHandles, Constraint<ColumnHandle> constraint)
     {
-        return EMPTY_STATISTICS;
+        return TableStatistics.empty();
     }
 
     /**
@@ -170,6 +299,18 @@ public interface ConnectorMetadata
     default void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean ignoreExisting)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support creating tables");
+    }
+
+    /**
+     * Creates a temporary table with optional partitioning requirements.
+     * Temporary table might have different default storage format, compression scheme, replication factor, etc,
+     * and gets automatically dropped when the transaction ends.
+     * <p>
+     * This SPI is unstable and subject to change in the future.
+     */
+    default ConnectorTableHandle createTemporaryTable(ConnectorSession session, List<ColumnMetadata> columns, Optional<ConnectorPartitioningMetadata> partitioningMetadata)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support creating temporary tables");
     }
 
     /**
@@ -223,6 +364,19 @@ public interface ConnectorMetadata
     }
 
     /**
+     * A connector can have preferred shuffle layout for table write.
+     * For example, Hive connector might prefer to shuffle on partitioned columns for partitioned unbucketed table.
+     *
+     * @apiNote this method and {@link #getNewTableLayout} cannot both return non-empty table layout.
+     * @see #getPreferredShuffleLayoutForInsert
+     */
+    @Experimental
+    default Optional<ConnectorNewTableLayout> getPreferredShuffleLayoutForNewTable(ConnectorSession session, ConnectorTableMetadata tableMetadata)
+    {
+        return Optional.empty();
+    }
+
+    /**
      * Get the physical layout for a inserting into an existing table.
      */
     default Optional<ConnectorNewTableLayout> getInsertLayout(ConnectorSession session, ConnectorTableHandle tableHandle)
@@ -253,6 +407,51 @@ public interface ConnectorMetadata
     }
 
     /**
+     * A connector can have preferred shuffle layout for table write.
+     * For example, Hive connector might prefer to shuffle on partitioned columns for partitioned unbucketed table.
+     *
+     * @apiNote this method and {@link #getInsertLayout} cannot both return non-empty table layout.
+     * @see #getPreferredShuffleLayoutForNewTable
+     */
+    @Experimental
+    default Optional<ConnectorNewTableLayout> getPreferredShuffleLayoutForInsert(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        return Optional.empty();
+    }
+
+    /**
+     * Describes statistics that must be collected during a write.
+     */
+    default TableStatisticsMetadata getStatisticsCollectionMetadataForWrite(ConnectorSession session, ConnectorTableMetadata tableMetadata)
+    {
+        return TableStatisticsMetadata.empty();
+    }
+
+    /**
+     * Describe statistics that must be collected during a statistics collection
+     */
+    default TableStatisticsMetadata getStatisticsCollectionMetadata(ConnectorSession session, ConnectorTableMetadata tableMetadata)
+    {
+        throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata getTableHandleForStatisticsCollection() is implemented without getStatisticsCollectionMetadata()");
+    }
+
+    /**
+     * Begin statistics collection
+     */
+    default ConnectorTableHandle beginStatisticsCollection(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata getStatisticsCollectionMetadata() is implemented without beginStatisticsCollection()");
+    }
+
+    /**
+     * Finish statistics collection
+     */
+    default void finishStatisticsCollection(ConnectorSession session, ConnectorTableHandle tableHandle, Collection<ComputedStatistics> computedStatistics)
+    {
+        throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata beginStatisticsCollection() is implemented without finishStatisticsCollection()");
+    }
+
+    /**
      * Begin the atomic creation of a table with data.
      */
     default ConnectorOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, Optional<ConnectorNewTableLayout> layout)
@@ -263,7 +462,7 @@ public interface ConnectorMetadata
     /**
      * Finish a table creation with data after the data is written.
      */
-    default Optional<ConnectorOutputMetadata> finishCreateTable(ConnectorSession session, ConnectorOutputTableHandle tableHandle, Collection<Slice> fragments)
+    default Optional<ConnectorOutputMetadata> finishCreateTable(ConnectorSession session, ConnectorOutputTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata beginCreateTable() is implemented without finishCreateTable()");
     }
@@ -290,7 +489,7 @@ public interface ConnectorMetadata
     /**
      * Finish insert query
      */
-    default Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments)
+    default Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata beginInsert() is implemented without finishInsert()");
     }
@@ -326,7 +525,7 @@ public interface ConnectorMetadata
     /**
      * Create the specified view. The data for the view is opaque to the connector.
      */
-    default void createView(ConnectorSession session, SchemaTableName viewName, String viewData, boolean replace)
+    default void createView(ConnectorSession session, ConnectorTableMetadata viewMetadata, String viewData, boolean replace)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support creating views");
     }
@@ -341,10 +540,18 @@ public interface ConnectorMetadata
 
     /**
      * List view names, possibly filtered by schema. An empty list is returned if none match.
+     *
+     * @deprecated replaced by {@link ConnectorMetadata#listViews(ConnectorSession, Optional)}
      */
+    @Deprecated
     default List<SchemaTableName> listViews(ConnectorSession session, String schemaNameOrNull)
     {
         return emptyList();
+    }
+
+    default List<SchemaTableName> listViews(ConnectorSession session, Optional<String> schemaName)
+    {
+        return listViews(session, schemaName.orElse(null));
     }
 
     /**
@@ -356,9 +563,57 @@ public interface ConnectorMetadata
     }
 
     /**
+     * Gets the materialized view data for the specified materialized view name.
+     */
+    default Optional<ConnectorMaterializedViewDefinition> getMaterializedView(ConnectorSession session, SchemaTableName viewName)
+    {
+        return Optional.empty();
+    }
+
+    /**
+     * Create the specified materialized view. The data for the materialized view is opaque to the connector.
+     */
+    default void createMaterializedView(ConnectorSession session, ConnectorTableMetadata viewMetadata, ConnectorMaterializedViewDefinition viewDefinition, boolean ignoreExisting)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support creating materialized views");
+    }
+
+    /**
+     * Drop the specified materialized view.
+     */
+    default void dropMaterializedView(ConnectorSession session, SchemaTableName viewName)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support dropping materialized views");
+    }
+
+    /**
+     * Get the materialized view status to inform the engine how much data has been materialized in the view
+     */
+    default MaterializedViewStatus getMaterializedViewStatus(ConnectorSession session, SchemaTableName materializedViewName)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support getting materialized views status");
+    }
+
+    /**
+     * Begin refresh materialized view
+     */
+    default ConnectorInsertTableHandle beginRefreshMaterializedView(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support refresh materialized views");
+    }
+
+    /**
+     * Finish refresh materialized view
+     */
+    default Optional<ConnectorOutputMetadata> finishRefreshMaterializedView(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    {
+        throw new PrestoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata finishRefreshMaterializedView() is not implemented");
+    }
+
+    /**
      * @return whether delete without table scan is supported
      */
-    default boolean supportsMetadataDelete(ConnectorSession session, ConnectorTableHandle tableHandle, ConnectorTableLayoutHandle tableLayoutHandle)
+    default boolean supportsMetadataDelete(ConnectorSession session, ConnectorTableHandle tableHandle, Optional<ConnectorTableLayoutHandle> tableLayoutHandle)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support deletes");
     }
@@ -382,9 +637,79 @@ public interface ConnectorMetadata
     }
 
     /**
+     * Creates the specified role.
+     *
+     * @param grantor represents the principal specified by WITH ADMIN statement
+     */
+    default void createRole(ConnectorSession session, String role, Optional<PrestoPrincipal> grantor)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support create role");
+    }
+
+    /**
+     * Drops the specified role.
+     */
+    default void dropRole(ConnectorSession session, String role)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support drop role");
+    }
+
+    /**
+     * List available roles.
+     */
+    default Set<String> listRoles(ConnectorSession session)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
+    }
+
+    /**
+     * List role grants for a given principal, not recursively.
+     */
+    default Set<RoleGrant> listRoleGrants(ConnectorSession session, PrestoPrincipal principal)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
+    }
+
+    /**
+     * Grants the specified roles to the specified grantees
+     *
+     * @param grantor represents the principal specified by GRANTED BY statement
+     */
+    default void grantRoles(ConnectorSession connectorSession, Set<String> roles, Set<PrestoPrincipal> grantees, boolean withAdminOption, Optional<PrestoPrincipal> grantor)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
+    }
+
+    /**
+     * Revokes the specified roles from the specified grantees
+     *
+     * @param grantor represents the principal specified by GRANTED BY statement
+     */
+    default void revokeRoles(ConnectorSession connectorSession, Set<String> roles, Set<PrestoPrincipal> grantees, boolean adminOptionFor, Optional<PrestoPrincipal> grantor)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
+    }
+
+    /**
+     * List applicable roles, including the transitive grants, for the specified principal
+     */
+    default Set<RoleGrant> listApplicableRoles(ConnectorSession session, PrestoPrincipal principal)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
+    }
+
+    /**
+     * List applicable roles, including the transitive grants, in given session
+     */
+    default Set<String> listEnabledRoles(ConnectorSession session)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
+    }
+
+    /**
      * Grants the specified privilege to the specified user on the specified table
      */
-    default void grantTablePrivileges(ConnectorSession session, SchemaTableName tableName, Set<Privilege> privileges, String grantee, boolean grantOption)
+    default void grantTablePrivileges(ConnectorSession session, SchemaTableName tableName, Set<Privilege> privileges, PrestoPrincipal grantee, boolean grantOption)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support grants");
     }
@@ -392,13 +717,13 @@ public interface ConnectorMetadata
     /**
      * Revokes the specified privilege on the specified table from the specified user
      */
-    default void revokeTablePrivileges(ConnectorSession session, SchemaTableName tableName, Set<Privilege> privileges, String grantee, boolean grantOption)
+    default void revokeTablePrivileges(ConnectorSession session, SchemaTableName tableName, Set<Privilege> privileges, PrestoPrincipal grantee, boolean grantOption)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support revokes");
     }
 
     /**
-     * List the table privileges granted to the specified grantee for the tables that have the specified prefix
+     * List the table privileges granted to the specified grantee for the tables that have the specified prefix considering the selected session role
      */
     default List<GrantInfo> listTablePrivileges(ConnectorSession session, SchemaTablePrefix prefix)
     {
@@ -406,34 +731,42 @@ public interface ConnectorMetadata
     }
 
     /**
-     * Gets the table identity on the specified table
+     * Commits page sink for table creation.
+     * To enable recoverable grouped execution, it is required that output connector supports page sink commit.
+     * This method is unstable and subject to change in the future.
      */
-    default TableIdentity getTableIdentity(ConnectorTableHandle connectorTableHandle)
+    @Experimental
+    default CompletableFuture<Void> commitPageSinkAsync(ConnectorSession session, ConnectorOutputTableHandle tableHandle, Collection<Slice> fragments)
     {
-        throw new PrestoException(NOT_SUPPORTED, "This connector does not support table identity");
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support page sink commit");
     }
 
     /**
-     * Deserialize the specified bytes to TableIdentity
+     * Commits page sink for table insertion.
+     * To enable recoverable grouped execution, it is required that output connector supports page sink commit.
+     * This method is unstable and subject to change in the future.
      */
-    default TableIdentity deserializeTableIdentity(byte[] bytes)
+    @Experimental
+    default CompletableFuture<Void> commitPageSinkAsync(ConnectorSession session, ConnectorInsertTableHandle tableHandle, Collection<Slice> fragments)
     {
-        throw new PrestoException(NOT_SUPPORTED, "This connector does not support table identity");
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support page sink commit");
     }
 
     /**
-     * Gets the column identity on the specified column
+     * Handles metadata update requests and sends the results back to worker
      */
-    default ColumnIdentity getColumnIdentity(ColumnHandle columnHandle)
+    default List<ConnectorMetadataUpdateHandle> getMetadataUpdateResults(List<ConnectorMetadataUpdateHandle> metadataUpdateRequests, QueryId queryId)
     {
-        throw new PrestoException(NOT_SUPPORTED, "This connector does not support column identity");
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support metadata update requests");
     }
 
-    /**
-     * Deserialize the specified bytes to ColumnIdentity
-     */
-    default ColumnIdentity deserializeColumnIdentity(byte[] bytes)
+    default void doMetadataUpdateCleanup(QueryId queryId)
     {
-        throw new PrestoException(NOT_SUPPORTED, "This connector does not support column identity");
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support metadata update cleanup");
+    }
+
+    default TableLayoutFilterCoverage getTableLayoutFilterCoverage(ConnectorTableLayoutHandle tableHandle, Set<String> relevantPartitionColumns)
+    {
+        return NOT_APPLICABLE;
     }
 }

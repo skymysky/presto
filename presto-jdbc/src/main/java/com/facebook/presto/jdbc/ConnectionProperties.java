@@ -16,14 +16,19 @@ package com.facebook.presto.jdbc;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.HostAndPort;
+import okhttp3.Protocol;
 
 import java.io.File;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.function.Predicate;
 
+import static com.facebook.presto.jdbc.AbstractConnectionProperty.ClassListConverter.CLASS_LIST_CONVERTER;
+import static com.facebook.presto.jdbc.AbstractConnectionProperty.HttpProtocolConverter.HTTP_PROTOCOL_CONVERTER;
+import static com.facebook.presto.jdbc.AbstractConnectionProperty.StringMapConverter.STRING_MAP_CONVERTER;
 import static com.facebook.presto.jdbc.AbstractConnectionProperty.checkedPredicate;
 import static java.util.Collections.unmodifiableMap;
 import static java.util.function.Function.identity;
@@ -35,30 +40,48 @@ final class ConnectionProperties
     public static final ConnectionProperty<String> PASSWORD = new Password();
     public static final ConnectionProperty<HostAndPort> SOCKS_PROXY = new SocksProxy();
     public static final ConnectionProperty<HostAndPort> HTTP_PROXY = new HttpProxy();
+    public static final ConnectionProperty<String> APPLICATION_NAME_PREFIX = new ApplicationNamePrefix();
+    public static final ConnectionProperty<Boolean> DISABLE_COMPRESSION = new DisableCompression();
     public static final ConnectionProperty<Boolean> SSL = new Ssl();
+    public static final ConnectionProperty<String> SSL_KEY_STORE_PATH = new SslKeyStorePath();
+    public static final ConnectionProperty<String> SSL_KEY_STORE_PASSWORD = new SslKeyStorePassword();
     public static final ConnectionProperty<String> SSL_TRUST_STORE_PATH = new SslTrustStorePath();
     public static final ConnectionProperty<String> SSL_TRUST_STORE_PASSWORD = new SslTrustStorePassword();
-    public static final ConnectionProperty<String> KERBEROS_REMOTE_SERICE_NAME = new KerberosRemoteServiceName();
+    public static final ConnectionProperty<String> KERBEROS_REMOTE_SERVICE_NAME = new KerberosRemoteServiceName();
     public static final ConnectionProperty<Boolean> KERBEROS_USE_CANONICAL_HOSTNAME = new KerberosUseCanonicalHostname();
     public static final ConnectionProperty<String> KERBEROS_PRINCIPAL = new KerberosPrincipal();
     public static final ConnectionProperty<File> KERBEROS_CONFIG_PATH = new KerberosConfigPath();
     public static final ConnectionProperty<File> KERBEROS_KEYTAB_PATH = new KerberosKeytabPath();
     public static final ConnectionProperty<File> KERBEROS_CREDENTIAL_CACHE_PATH = new KerberosCredentialCachePath();
+    public static final ConnectionProperty<String> ACCESS_TOKEN = new AccessToken();
+    public static final ConnectionProperty<Map<String, String>> EXTRA_CREDENTIALS = new ExtraCredentials();
+    public static final ConnectionProperty<Map<String, String>> SESSION_PROPERTIES = new SessionProperties();
+    public static final ConnectionProperty<List<Protocol>> HTTP_PROTOCOLS = new HttpProtocols();
+    public static final ConnectionProperty<List<QueryInterceptor>> QUERY_INTERCEPTORS = new QueryInterceptors();
 
     private static final Set<ConnectionProperty<?>> ALL_PROPERTIES = ImmutableSet.<ConnectionProperty<?>>builder()
             .add(USER)
             .add(PASSWORD)
             .add(SOCKS_PROXY)
             .add(HTTP_PROXY)
+            .add(APPLICATION_NAME_PREFIX)
+            .add(DISABLE_COMPRESSION)
             .add(SSL)
+            .add(SSL_KEY_STORE_PATH)
+            .add(SSL_KEY_STORE_PASSWORD)
             .add(SSL_TRUST_STORE_PATH)
             .add(SSL_TRUST_STORE_PASSWORD)
-            .add(KERBEROS_REMOTE_SERICE_NAME)
+            .add(KERBEROS_REMOTE_SERVICE_NAME)
             .add(KERBEROS_USE_CANONICAL_HOSTNAME)
             .add(KERBEROS_PRINCIPAL)
             .add(KERBEROS_CONFIG_PATH)
             .add(KERBEROS_KEYTAB_PATH)
             .add(KERBEROS_CREDENTIAL_CACHE_PATH)
+            .add(ACCESS_TOKEN)
+            .add(EXTRA_CREDENTIALS)
+            .add(SESSION_PROPERTIES)
+            .add(HTTP_PROTOCOLS)
+            .add(QUERY_INTERCEPTORS)
             .build();
 
     private static final Map<String, ConnectionProperty<?>> KEY_LOOKUP = unmodifiableMap(ALL_PROPERTIES.stream()
@@ -133,12 +156,54 @@ final class ConnectionProperties
         }
     }
 
+    private static class ApplicationNamePrefix
+            extends AbstractConnectionProperty<String>
+    {
+        public ApplicationNamePrefix()
+        {
+            super("applicationNamePrefix", NOT_REQUIRED, ALLOWED, STRING_CONVERTER);
+        }
+    }
+
+    private static class DisableCompression
+            extends AbstractConnectionProperty<Boolean>
+    {
+        public DisableCompression()
+        {
+            super("disableCompression", NOT_REQUIRED, ALLOWED, BOOLEAN_CONVERTER);
+        }
+    }
+
     private static class Ssl
             extends AbstractConnectionProperty<Boolean>
     {
         public Ssl()
         {
-            super("SSL", Optional.of("false"), NOT_REQUIRED, ALLOWED, BOOLEAN_CONVERTER);
+            super("SSL", NOT_REQUIRED, ALLOWED, BOOLEAN_CONVERTER);
+        }
+    }
+
+    private static class SslKeyStorePath
+            extends AbstractConnectionProperty<String>
+    {
+        private static final Predicate<Properties> IF_SSL_ENABLED =
+                checkedPredicate(properties -> SSL.getValue(properties).orElse(false));
+
+        public SslKeyStorePath()
+        {
+            super("SSLKeyStorePath", NOT_REQUIRED, IF_SSL_ENABLED, STRING_CONVERTER);
+        }
+    }
+
+    private static class SslKeyStorePassword
+            extends AbstractConnectionProperty<String>
+    {
+        private static final Predicate<Properties> IF_KEY_STORE =
+                checkedPredicate(properties -> SSL_KEY_STORE_PATH.getValue(properties).isPresent());
+
+        public SslKeyStorePassword()
+        {
+            super("SSLKeyStorePassword", NOT_REQUIRED, IF_KEY_STORE, STRING_CONVERTER);
         }
     }
 
@@ -177,7 +242,7 @@ final class ConnectionProperties
 
     private static Predicate<Properties> isKerberosEnabled()
     {
-        return checkedPredicate(properties -> KERBEROS_REMOTE_SERICE_NAME.getValue(properties).isPresent());
+        return checkedPredicate(properties -> KERBEROS_REMOTE_SERVICE_NAME.getValue(properties).isPresent());
     }
 
     private static class KerberosPrincipal
@@ -222,6 +287,51 @@ final class ConnectionProperties
         public KerberosCredentialCachePath()
         {
             super("KerberosCredentialCachePath", NOT_REQUIRED, isKerberosEnabled(), FILE_CONVERTER);
+        }
+    }
+
+    private static class AccessToken
+            extends AbstractConnectionProperty<String>
+    {
+        public AccessToken()
+        {
+            super("accessToken", NOT_REQUIRED, ALLOWED, STRING_CONVERTER);
+        }
+    }
+
+    private static class ExtraCredentials
+            extends AbstractConnectionProperty<Map<String, String>>
+    {
+        public ExtraCredentials()
+        {
+            super("extraCredentials", NOT_REQUIRED, ALLOWED, STRING_MAP_CONVERTER);
+        }
+    }
+
+    private static class SessionProperties
+            extends AbstractConnectionProperty<Map<String, String>>
+    {
+        public SessionProperties()
+        {
+            super("sessionProperties", NOT_REQUIRED, ALLOWED, STRING_MAP_CONVERTER);
+        }
+    }
+
+    private static class HttpProtocols
+            extends AbstractConnectionProperty<List<Protocol>>
+    {
+        public HttpProtocols()
+        {
+            super("protocols", NOT_REQUIRED, ALLOWED, HTTP_PROTOCOL_CONVERTER);
+        }
+    }
+
+    private static class QueryInterceptors
+            extends AbstractConnectionProperty<List<QueryInterceptor>>
+    {
+        public QueryInterceptors()
+        {
+            super("queryInterceptors", NOT_REQUIRED, ALLOWED, CLASS_LIST_CONVERTER);
         }
     }
 }

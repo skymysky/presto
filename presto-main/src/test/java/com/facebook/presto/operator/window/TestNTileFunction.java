@@ -16,8 +16,8 @@ package com.facebook.presto.operator.window;
 import org.testng.annotations.Test;
 
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
 
 public class TestNTileFunction
@@ -25,7 +25,6 @@ public class TestNTileFunction
 {
     @Test
     public void testNTile()
-            throws Exception
     {
         assertWindowQuery("ntile(4) OVER (ORDER BY orderkey)",
                 resultBuilder(TEST_SESSION, BIGINT, VARCHAR, BIGINT)

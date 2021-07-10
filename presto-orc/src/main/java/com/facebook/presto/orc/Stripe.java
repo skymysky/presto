@@ -14,10 +14,12 @@
 package com.facebook.presto.orc;
 
 import com.facebook.presto.orc.metadata.ColumnEncoding;
+import com.facebook.presto.orc.reader.LongDictionaryProvider;
 import com.facebook.presto.orc.stream.InputStreamSources;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
+import java.util.Map;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
@@ -25,16 +27,18 @@ import static java.util.Objects.requireNonNull;
 public class Stripe
 {
     private final long rowCount;
-    private final List<ColumnEncoding> columnEncodings;
+    private final Map<Integer, ColumnEncoding> columnEncodings;
     private final List<RowGroup> rowGroups;
     private final InputStreamSources dictionaryStreamSources;
+    private final LongDictionaryProvider longDictionaryProvider;
 
-    public Stripe(long rowCount, List<ColumnEncoding> columnEncodings, List<RowGroup> rowGroups, InputStreamSources dictionaryStreamSources)
+    public Stripe(long rowCount, Map<Integer, ColumnEncoding> columnEncodings, List<RowGroup> rowGroups, InputStreamSources dictionaryStreamSources)
     {
         this.rowCount = rowCount;
         this.columnEncodings = requireNonNull(columnEncodings, "columnEncodings is null");
         this.rowGroups = ImmutableList.copyOf(requireNonNull(rowGroups, "rowGroups is null"));
         this.dictionaryStreamSources = requireNonNull(dictionaryStreamSources, "dictionaryStreamSources is null");
+        this.longDictionaryProvider = new LongDictionaryProvider(this.dictionaryStreamSources);
     }
 
     public long getRowCount()
@@ -42,7 +46,7 @@ public class Stripe
         return rowCount;
     }
 
-    public List<ColumnEncoding> getColumnEncodings()
+    public Map<Integer, ColumnEncoding> getColumnEncodings()
     {
         return columnEncodings;
     }
@@ -57,6 +61,11 @@ public class Stripe
         return dictionaryStreamSources;
     }
 
+    public LongDictionaryProvider getLongDictionaryProvider()
+    {
+        return longDictionaryProvider;
+    }
+
     @Override
     public String toString()
     {
@@ -65,6 +74,7 @@ public class Stripe
                 .add("columnEncodings", columnEncodings)
                 .add("rowGroups", rowGroups)
                 .add("dictionaryStreams", dictionaryStreamSources)
+                .add("longDictionaryProvider", longDictionaryProvider)
                 .toString();
     }
 }

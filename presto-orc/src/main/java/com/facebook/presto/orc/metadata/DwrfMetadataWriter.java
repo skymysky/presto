@@ -25,6 +25,7 @@ import com.facebook.presto.orc.proto.DwrfProto.UserMetadataItem;
 import com.facebook.presto.orc.protobuf.ByteString;
 import com.facebook.presto.orc.protobuf.MessageLite;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.io.CountingOutputStream;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
@@ -32,15 +33,25 @@ import io.airlift.slice.SliceOutput;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.airlift.slice.Slices.utf8Slice;
 import static java.lang.Math.toIntExact;
+import static java.lang.String.format;
+import static java.util.stream.Collectors.toList;
 
 public class DwrfMetadataWriter
         implements MetadataWriter
 {
     private static final int DWRF_WRITER_VERSION = 1;
+    public static final Map<String, Slice> STATIC_METADATA = ImmutableMap.<String, Slice>builder()
+            .put("orc.writer.name", utf8Slice("presto"))
+            .put("orc.writer.version", utf8Slice(String.valueOf(DWRF_WRITER_VERSION)))
+            .build();
 
     @Override
     public List<Integer> getOrcMetadataVersion()
@@ -50,22 +61,43 @@ public class DwrfMetadataWriter
     }
 
     @Override
-    public int writePostscript(SliceOutput output, int footerLength, int metadataLength, CompressionKind compression, int compressionBlockSize)
+    public int writePostscript(SliceOutput output,
+            int footerLength,
+            int metadataLength,
+            CompressionKind compression,
+            int compressionBlockSize,
+            Optional<DwrfStripeCacheData> dwrfStripeCacheData)
             throws IOException
     {
-        DwrfProto.PostScript postScriptProtobuf = DwrfProto.PostScript.newBuilder()
+        DwrfProto.PostScript.Builder postScriptBuilder = DwrfProto.PostScript.newBuilder()
                 .setFooterLength(footerLength)
                 .setWriterVersion(DWRF_WRITER_VERSION)
                 .setCompression(toCompression(compression))
-                .setCompressionBlockSize(compressionBlockSize)
-                .build();
+                .setCompressionBlockSize(compressionBlockSize);
 
+        dwrfStripeCacheData.ifPresent(cache -> {
+            postScriptBuilder.setCacheMode(toStripeCacheMode(cache.getDwrfStripeCacheMode()));
+            postScriptBuilder.setCacheSize(cache.getDwrfStripeCacheSize());
+        });
+
+        DwrfProto.PostScript postScriptProtobuf = postScriptBuilder.build();
         return writeProtobufObject(output, postScriptProtobuf);
     }
 
     @Override
+    public int writeDwrfStripeCache(SliceOutput output, Optional<DwrfStripeCacheData> dwrfStripeCacheData)
+    {
+        int size = 0;
+        if (dwrfStripeCacheData.isPresent()) {
+            DwrfStripeCacheData cache = dwrfStripeCacheData.get();
+            size = cache.getDwrfStripeCacheSize();
+            output.writeBytes(cache.getDwrfStripeCacheSlice(), 0, size);
+        }
+        return size;
+    }
+
+    @Override
     public int writeMetadata(SliceOutput output, Metadata metadata)
-            throws IOException
     {
         return 0;
     }
@@ -74,7 +106,7 @@ public class DwrfMetadataWriter
     public int writeFooter(SliceOutput output, Footer footer)
             throws IOException
     {
-        DwrfProto.Footer footerProtobuf = DwrfProto.Footer.newBuilder()
+        DwrfProto.Footer.Builder footerProtobuf = DwrfProto.Footer.newBuilder()
                 .setNumberOfRows(footer.getNumberOfRows())
                 .setRowIndexStride(footer.getRowsInRowGroup())
                 .addAllStripes(footer.getStripes().stream()
@@ -89,9 +121,19 @@ public class DwrfMetadataWriter
                 .addAllMetadata(footer.getUserMetadata().entrySet().stream()
                         .map(DwrfMetadataWriter::toUserMetadata)
                         .collect(toImmutableList()))
-                .build();
+                .addAllMetadata(STATIC_METADATA.entrySet().stream()
+                        .map(DwrfMetadataWriter::toUserMetadata)
+                        .collect(toImmutableList()));
 
-        return writeProtobufObject(output, footerProtobuf);
+        if (footer.getEncryption().isPresent()) {
+            footerProtobuf.setEncryption(toEncryption(footer.getEncryption().get()));
+        }
+
+        if (footer.getDwrfStripeCacheOffsets().isPresent()) {
+            footerProtobuf.addAllStripeCacheOffsets(footer.getDwrfStripeCacheOffsets().get());
+        }
+
+        return writeProtobufObject(output, footerProtobuf.build());
     }
 
     private static DwrfProto.StripeInformation toStripeInformation(StripeInformation stripe)
@@ -102,6 +144,9 @@ public class DwrfMetadataWriter
                 .setIndexLength(stripe.getIndexLength())
                 .setDataLength(stripe.getDataLength())
                 .setFooterLength(stripe.getFooterLength())
+                .addAllKeyMetadata(stripe.getKeyMetadata().stream()
+                        .map(ByteString::copyFrom)
+                        .collect(toImmutableList()))
                 .build();
     }
 
@@ -151,7 +196,7 @@ public class DwrfMetadataWriter
         throw new IllegalArgumentException("Unsupported type: " + orcTypeKind);
     }
 
-    private static DwrfProto.ColumnStatistics toColumnStatistics(ColumnStatistics columnStatistics)
+    public static DwrfProto.ColumnStatistics toColumnStatistics(ColumnStatistics columnStatistics)
     {
         DwrfProto.ColumnStatistics.Builder builder = DwrfProto.ColumnStatistics.newBuilder();
 
@@ -166,10 +211,13 @@ public class DwrfMetadataWriter
         }
 
         if (columnStatistics.getIntegerStatistics() != null) {
-            builder.setIntStatistics(DwrfProto.IntegerStatistics.newBuilder()
+            DwrfProto.IntegerStatistics.Builder integerStatistics = DwrfProto.IntegerStatistics.newBuilder()
                     .setMinimum(columnStatistics.getIntegerStatistics().getMin())
-                    .setMaximum(columnStatistics.getIntegerStatistics().getMax())
-                    .build());
+                    .setMaximum(columnStatistics.getIntegerStatistics().getMax());
+            if (columnStatistics.getIntegerStatistics().getSum() != null) {
+                integerStatistics.setSum(columnStatistics.getIntegerStatistics().getSum());
+            }
+            builder.setIntStatistics(integerStatistics.build());
         }
 
         if (columnStatistics.getDoubleStatistics() != null) {
@@ -180,9 +228,20 @@ public class DwrfMetadataWriter
         }
 
         if (columnStatistics.getStringStatistics() != null) {
-            builder.setStringStatistics(DwrfProto.StringStatistics.newBuilder()
-                    .setMinimumBytes(ByteString.copyFrom(columnStatistics.getStringStatistics().getMin().getBytes()))
-                    .setMaximumBytes(ByteString.copyFrom(columnStatistics.getStringStatistics().getMax().getBytes()))
+            DwrfProto.StringStatistics.Builder statisticsBuilder = DwrfProto.StringStatistics.newBuilder();
+            if (columnStatistics.getStringStatistics().getMin() != null) {
+                statisticsBuilder.setMinimumBytes(ByteString.copyFrom(columnStatistics.getStringStatistics().getMin().getBytes()));
+            }
+            if (columnStatistics.getStringStatistics().getMax() != null) {
+                statisticsBuilder.setMaximumBytes(ByteString.copyFrom(columnStatistics.getStringStatistics().getMax().getBytes()));
+            }
+            statisticsBuilder.setSum(columnStatistics.getStringStatistics().getSum());
+            builder.setStringStatistics(statisticsBuilder.build());
+        }
+
+        if (columnStatistics.getBinaryStatistics() != null) {
+            builder.setBinaryStatistics(DwrfProto.BinaryStatistics.newBuilder()
+                    .setSum(columnStatistics.getBinaryStatistics().getSum())
                     .build());
         }
 
@@ -205,8 +264,11 @@ public class DwrfMetadataWriter
                 .addAllStreams(footer.getStreams().stream()
                         .map(DwrfMetadataWriter::toStream)
                         .collect(toImmutableList()))
-                .addAllColumns(footer.getColumnEncodings().stream()
-                        .map(DwrfMetadataWriter::toColumnEncoding)
+                .addAllColumns(footer.getColumnEncodings().entrySet().stream()
+                        .map(entry -> toColumnEncoding(entry.getKey(), entry.getValue()))
+                        .collect(toImmutableList()))
+                .addAllEncryptedGroups(footer.getStripeEncryptionGroups().stream()
+                        .map(group -> ByteString.copyFrom(group.getBytes()))
                         .collect(toImmutableList()))
                 .build();
 
@@ -215,12 +277,14 @@ public class DwrfMetadataWriter
 
     private static DwrfProto.Stream toStream(Stream stream)
     {
-        return DwrfProto.Stream.newBuilder()
+        DwrfProto.Stream.Builder streamBuilder = DwrfProto.Stream.newBuilder()
                 .setColumn(stream.getColumn())
                 .setKind(toStreamKind(stream.getStreamKind()))
                 .setLength(stream.getLength())
-                .setUseVInts(stream.isUseVInts())
-                .build();
+                .setUseVInts(stream.isUseVInts());
+        stream.getOffset().ifPresent(streamBuilder::setOffset);
+
+        return streamBuilder.build();
     }
 
     private static DwrfProto.Stream.Kind toStreamKind(StreamKind streamKind)
@@ -244,15 +308,21 @@ public class DwrfMetadataWriter
         throw new IllegalArgumentException("Unsupported stream kind: " + streamKind);
     }
 
-    private static DwrfProto.ColumnEncoding toColumnEncoding(ColumnEncoding columnEncodings)
+    public static DwrfProto.ColumnEncoding toColumnEncoding(int columnId, ColumnEncoding columnEncoding)
     {
+        checkArgument(
+                !columnEncoding.getAdditionalSequenceEncodings().isPresent(),
+                "DWRF writer doesn't support writing columns with non-zero sequence IDs: " + columnEncoding);
+
         return DwrfProto.ColumnEncoding.newBuilder()
-                .setKind(toColumnEncoding(columnEncodings.getColumnEncodingKind()))
-                .setDictionarySize(columnEncodings.getDictionarySize())
+                .setKind(toColumnEncodingKind(columnEncoding.getColumnEncodingKind()))
+                .setDictionarySize(columnEncoding.getDictionarySize())
+                .setColumn(columnId)
+                .setSequence(0)
                 .build();
     }
 
-    private static DwrfProto.ColumnEncoding.Kind toColumnEncoding(ColumnEncodingKind columnEncodingKind)
+    private static DwrfProto.ColumnEncoding.Kind toColumnEncodingKind(ColumnEncodingKind columnEncodingKind)
     {
         switch (columnEncodingKind) {
             case DIRECT:
@@ -275,12 +345,6 @@ public class DwrfMetadataWriter
         return writeProtobufObject(output, rowIndexProtobuf);
     }
 
-    @Override
-    public MetadataReader getMetadataReader()
-    {
-        return new DwrfMetadataReader();
-    }
-
     private static RowIndexEntry toRowGroupIndex(RowGroupIndex rowGroupIndex)
     {
         return RowIndexEntry.newBuilder()
@@ -300,8 +364,82 @@ public class DwrfMetadataWriter
                 return DwrfProto.CompressionKind.ZLIB;
             case SNAPPY:
                 return DwrfProto.CompressionKind.SNAPPY;
+            case LZ4:
+                return DwrfProto.CompressionKind.LZ4;
+            case ZSTD:
+                return DwrfProto.CompressionKind.ZSTD;
         }
         throw new IllegalArgumentException("Unsupported compression kind: " + compressionKind);
+    }
+
+    private static DwrfProto.Encryption toEncryption(DwrfEncryption encryption)
+    {
+        return DwrfProto.Encryption.newBuilder()
+                .setKeyProvider(toKeyProvider(encryption.getKeyProvider()))
+                .addAllEncryptionGroups(encryption.getEncryptionGroups().stream()
+                        .map(group -> toEncryptionGroup(group))
+                        .collect(toImmutableList()))
+                .build();
+    }
+
+    private static DwrfProto.Encryption.KeyProvider toKeyProvider(KeyProvider keyProvider)
+    {
+        switch (keyProvider) {
+            case CRYPTO_SERVICE:
+                return DwrfProto.Encryption.KeyProvider.CRYPTO_SERVICE;
+            case UNKNOWN:
+                return DwrfProto.Encryption.KeyProvider.UNKNOWN;
+            default:
+                throw new UnsupportedOperationException(format("unknown key provider: %s", keyProvider));
+        }
+    }
+
+    private static DwrfProto.EncryptionGroup toEncryptionGroup(EncryptionGroup encryptionGroup)
+    {
+        return DwrfProto.EncryptionGroup.newBuilder()
+                .addAllNodes(encryptionGroup.getNodes())
+                .addAllStatistics(encryptionGroup.getStatistics().stream()
+                        .map(statsSlice -> ByteString.copyFrom(statsSlice.getBytes()))
+                        .collect(toImmutableList()))
+                .build();
+    }
+
+    public static DwrfProto.StripeEncryptionGroup toStripeEncryptionGroup(StripeEncryptionGroup stripeEncryptionGroup)
+    {
+        return DwrfProto.StripeEncryptionGroup.newBuilder()
+                .addAllStreams(stripeEncryptionGroup.getStreams().stream()
+                        .map(DwrfMetadataWriter::toStream)
+                        .collect(toImmutableList()))
+                .addAllEncoding(stripeEncryptionGroup.getColumnEncodings().entrySet()
+                        .stream()
+                        .map(entry -> toColumnEncoding(entry.getKey(), entry.getValue()))
+                        .collect(toImmutableList()))
+                .build();
+    }
+
+    public static DwrfProto.FileStatistics toFileStatistics(List<ColumnStatistics> columnStatistics)
+    {
+        List<DwrfProto.ColumnStatistics> dwrfColumnStatistics = columnStatistics.stream()
+                .map(DwrfMetadataWriter::toColumnStatistics)
+                .collect(toList());
+        return DwrfProto.FileStatistics.newBuilder()
+                .addAllStatistics(dwrfColumnStatistics)
+                .build();
+    }
+
+    private static DwrfProto.StripeCacheMode toStripeCacheMode(DwrfStripeCacheMode dwrfStripeCacheMode)
+    {
+        switch (dwrfStripeCacheMode) {
+            case NONE:
+                return DwrfProto.StripeCacheMode.NA;
+            case INDEX:
+                return DwrfProto.StripeCacheMode.INDEX;
+            case FOOTER:
+                return DwrfProto.StripeCacheMode.FOOTER;
+            case INDEX_AND_FOOTER:
+                return DwrfProto.StripeCacheMode.BOTH;
+        }
+        throw new IllegalArgumentException("Unsupported mode: " + dwrfStripeCacheMode);
     }
 
     private static int writeProtobufObject(OutputStream output, MessageLite object)

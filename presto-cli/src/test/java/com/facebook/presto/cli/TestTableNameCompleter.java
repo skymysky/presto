@@ -13,37 +13,18 @@
  */
 package com.facebook.presto.cli;
 
-import com.facebook.presto.client.ClientSession;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
-
-import java.util.Optional;
 
 import static org.testng.Assert.assertEquals;
 
 public class TestTableNameCompleter
+        extends AbstractCliTest
 {
     @Test
     public void testAutoCompleteWithoutSchema()
     {
-        ClientSession session = new ClientOptions().toClientSession();
-        QueryRunner runner = new QueryRunner(
-                session,
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                false,
-                false);
+        QueryRunner runner = createQueryRunner(new ClientOptions().toClientSession());
         TableNameCompleter completer = new TableNameCompleter(runner);
         assertEquals(completer.complete("SELECT is_infi", 14, ImmutableList.of()), 7);
     }

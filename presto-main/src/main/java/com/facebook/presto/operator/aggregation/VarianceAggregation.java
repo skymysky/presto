@@ -13,8 +13,9 @@
  */
 package com.facebook.presto.operator.aggregation;
 
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.operator.aggregation.state.VarianceState;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.function.AggregationFunction;
 import com.facebook.presto.spi.function.AggregationState;
 import com.facebook.presto.spi.function.CombineFunction;
@@ -22,14 +23,12 @@ import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.InputFunction;
 import com.facebook.presto.spi.function.OutputFunction;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
 
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
 import static com.facebook.presto.operator.aggregation.AggregationUtils.mergeVarianceState;
 import static com.facebook.presto.operator.aggregation.AggregationUtils.updateVarianceState;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 
 @AggregationFunction
-@Description("Returns the variance of the argument")
 public final class VarianceAggregation
 {
     private VarianceAggregation() {}
@@ -85,6 +84,7 @@ public final class VarianceAggregation
     }
 
     @AggregationFunction(value = "stddev", alias = "stddev_samp")
+    @Description("Returns the sample standard deviation of the argument")
     @OutputFunction(StandardTypes.DOUBLE)
     public static void stddev(@AggregationState VarianceState state, BlockBuilder out)
     {
@@ -101,6 +101,7 @@ public final class VarianceAggregation
     }
 
     @AggregationFunction("stddev_pop")
+    @Description("Returns the population standard deviation of the argument")
     @OutputFunction(StandardTypes.DOUBLE)
     public static void stddevPop(@AggregationState VarianceState state, BlockBuilder out)
     {

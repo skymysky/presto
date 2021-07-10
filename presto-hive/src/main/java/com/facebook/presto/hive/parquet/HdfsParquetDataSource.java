@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.hive.parquet;
 
+import com.facebook.presto.hive.FileFormatDataSourceStats;
+import com.facebook.presto.parquet.AbstractParquetDataSource;
+import com.facebook.presto.parquet.ParquetDataSourceId;
 import com.facebook.presto.spi.PrestoException;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -25,32 +28,19 @@ import static com.facebook.presto.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
 import static com.google.common.base.Strings.nullToEmpty;
 import static java.lang.String.format;
+import static java.util.Objects.requireNonNull;
 
 public class HdfsParquetDataSource
-        implements ParquetDataSource
+        extends AbstractParquetDataSource
 {
-    private final String name;
-    private final long size;
     private final FSDataInputStream inputStream;
-    private long readBytes;
+    private final FileFormatDataSourceStats stats;
 
-    public HdfsParquetDataSource(Path path, long size, FSDataInputStream inputStream)
+    public HdfsParquetDataSource(ParquetDataSourceId id, FSDataInputStream inputStream, FileFormatDataSourceStats stats)
     {
-        this.name = path.toString();
-        this.size = size;
-        this.inputStream = inputStream;
-    }
-
-    @Override
-    public final long getReadBytes()
-    {
-        return readBytes;
-    }
-
-    @Override
-    public final long getSize()
-    {
-        return size;
+        super(id);
+        this.stats = requireNonNull(stats, "stats is null");
+        this.inputStream = requireNonNull(inputStream, "inputStream is null");
     }
 
     @Override
@@ -61,40 +51,27 @@ public class HdfsParquetDataSource
     }
 
     @Override
-    public final void readFully(long position, byte[] buffer)
-            throws IOException
-    {
-        readFully(position, buffer, 0, buffer.length);
-    }
-
-    @Override
-    public final void readFully(long position, byte[] buffer, int bufferOffset, int bufferLength)
-            throws IOException
-    {
-        readInternal(position, buffer, bufferOffset, bufferLength);
-        readBytes += bufferLength;
-    }
-
-    private void readInternal(long position, byte[] buffer, int bufferOffset, int bufferLength)
-            throws IOException
+    protected void readInternal(long position, byte[] buffer, int bufferOffset, int bufferLength)
     {
         try {
+            long start = System.nanoTime();
             inputStream.readFully(position, buffer, bufferOffset, bufferLength);
+            stats.readDataBytesPerSecond(bufferLength, System.nanoTime() - start);
         }
         catch (PrestoException e) {
             // just in case there is a Presto wrapper or hook
             throw e;
         }
         catch (Exception e) {
-            throw new PrestoException(HIVE_FILESYSTEM_ERROR, format("Error reading from %s at position %s", name, position), e);
+            throw new PrestoException(HIVE_FILESYSTEM_ERROR, format("Error reading from %s at position %s", getId(), position), e);
         }
     }
 
-    public static HdfsParquetDataSource buildHdfsParquetDataSource(FileSystem fileSystem, Path path, long start, long length, long fileSize)
+    public static HdfsParquetDataSource buildHdfsParquetDataSource(FileSystem fileSystem, Path path, long start, long length, FileFormatDataSourceStats stats)
     {
         try {
             FSDataInputStream inputStream = fileSystem.open(path);
-            return new HdfsParquetDataSource(path, fileSize, inputStream);
+            return new HdfsParquetDataSource(new ParquetDataSourceId(path.toString()), inputStream, stats);
         }
         catch (Exception e) {
             if (nullToEmpty(e.getMessage()).trim().equals("Filesystem closed") ||
@@ -103,5 +80,10 @@ public class HdfsParquetDataSource
             }
             throw new PrestoException(HIVE_CANNOT_OPEN_SPLIT, format("Error opening Hive split %s (offset=%s, length=%s): %s", path, start, length, e.getMessage()), e);
         }
+    }
+
+    public static HdfsParquetDataSource buildHdfsParquetDataSource(FSDataInputStream inputStream, Path path, FileFormatDataSourceStats stats)
+    {
+        return new HdfsParquetDataSource(new ParquetDataSourceId(path.toString()), inputStream, stats);
     }
 }

@@ -15,9 +15,10 @@ package com.facebook.presto.tests;
 
 import com.facebook.presto.Session;
 import com.facebook.presto.SystemSessionProperties;
-import com.facebook.presto.sql.parser.SqlParserOptions;
+import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tpch.TpchPlugin;
 import com.google.common.collect.ImmutableMap;
+import org.testng.annotations.Test;
 
 import java.nio.file.Paths;
 
@@ -27,13 +28,14 @@ import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 public class TestDistributedSpilledQueries
         extends AbstractTestQueries
 {
-    public TestDistributedSpilledQueries()
+    @Override
+    protected QueryRunner createQueryRunner()
             throws Exception
     {
-        super(TestDistributedSpilledQueries::createQueryRunner);
+        return localCreateQueryRunner();
     }
 
-    private static DistributedQueryRunner createQueryRunner()
+    public static QueryRunner localCreateQueryRunner()
             throws Exception
     {
         Session defaultSession = testSessionBuilder()
@@ -41,17 +43,20 @@ public class TestDistributedSpilledQueries
                 .setSchema(TINY_SCHEMA_NAME)
                 .setSystemProperty(SystemSessionProperties.TASK_CONCURRENCY, "2")
                 .setSystemProperty(SystemSessionProperties.SPILL_ENABLED, "true")
+                .setSystemProperty(SystemSessionProperties.JOIN_SPILL_ENABLED, "true")
                 .setSystemProperty(SystemSessionProperties.AGGREGATION_OPERATOR_UNSPILL_MEMORY_LIMIT, "128kB")
+                .setSystemProperty(SystemSessionProperties.USE_MARK_DISTINCT, "false")
                 .build();
 
         ImmutableMap<String, String> extraProperties = ImmutableMap.<String, String>builder()
+                .put("experimental.spill-enabled", "true")
                 .put("experimental.spiller-spill-path", Paths.get(System.getProperty("java.io.tmpdir"), "presto", "spills").toString())
                 .put("experimental.spiller-max-used-space-threshold", "1.0")
                 .put("experimental.memory-revoking-threshold", "0.0") // revoke always
                 .put("experimental.memory-revoking-target", "0.0")
                 .build();
 
-        DistributedQueryRunner queryRunner = new DistributedQueryRunner(defaultSession, 2, extraProperties, ImmutableMap.of(), new SqlParserOptions());
+        DistributedQueryRunner queryRunner = new DistributedQueryRunner(defaultSession, 2, extraProperties);
 
         try {
             queryRunner.installPlugin(new TpchPlugin());
@@ -64,6 +69,7 @@ public class TestDistributedSpilledQueries
         }
     }
 
+    @Test(enabled = false)
     @Override
     public void testAssignUniqueId()
     {

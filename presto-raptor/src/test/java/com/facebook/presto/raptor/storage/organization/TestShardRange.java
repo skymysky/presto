@@ -13,16 +13,16 @@
  */
 package com.facebook.presto.raptor.storage.organization;
 
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.type.Type;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
 
 import java.util.List;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
@@ -30,7 +30,6 @@ public class TestShardRange
 {
     @Test
     public void testEnclosesIsSymmetric()
-            throws Exception
     {
         List<Type> types = ImmutableList.of(BIGINT, VARCHAR, BOOLEAN, TIMESTAMP);
         ShardRange range = ShardRange.of(new Tuple(types, 2L, "aaa", true, 1L), new Tuple(types, 5L, "ccc", false, 2L));
@@ -39,7 +38,6 @@ public class TestShardRange
 
     @Test
     public void testEnclosingRange()
-            throws Exception
     {
         List<Type> types1 = ImmutableList.of(BIGINT);
         ShardRange range1 = ShardRange.of(new Tuple(types1, 2L), new Tuple(types1, 5L));
@@ -62,7 +60,6 @@ public class TestShardRange
 
     @Test
     public void testOverlapsIsSymmetric()
-            throws Exception
     {
         List<Type> types = ImmutableList.of(BIGINT, VARCHAR, BOOLEAN, TIMESTAMP);
         ShardRange range = ShardRange.of(new Tuple(types, 2L, "aaa", true, 1L), new Tuple(types, 5L, "ccc", false, 2L));
@@ -71,7 +68,6 @@ public class TestShardRange
 
     @Test
     public void testOverlappingRange()
-            throws Exception
     {
         List<Type> types1 = ImmutableList.of(BIGINT);
         ShardRange range1 = ShardRange.of(new Tuple(types1, 2L), new Tuple(types1, 5L));
@@ -97,7 +93,6 @@ public class TestShardRange
 
     @Test
     public void testAdjacentRange()
-            throws Exception
     {
         List<Type> types1 = ImmutableList.of(BIGINT);
         ShardRange range1 = ShardRange.of(new Tuple(types1, 2L), new Tuple(types1, 5L));

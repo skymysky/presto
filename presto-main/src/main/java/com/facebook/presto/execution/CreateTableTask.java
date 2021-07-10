@@ -14,16 +14,16 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.connector.ConnectorId;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.QualifiedObjectName;
-import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.metadata.TableMetadata;
 import com.facebook.presto.security.AccessControl;
 import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.sql.analyzer.SemanticException;
 import com.facebook.presto.sql.tree.ColumnDefinition;
 import com.facebook.presto.sql.tree.CreateTable;
@@ -44,11 +44,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.UnknownType.UNKNOWN;
 import static com.facebook.presto.metadata.MetadataUtil.createQualifiedObjectName;
+import static com.facebook.presto.metadata.MetadataUtil.toSchemaTableName;
 import static com.facebook.presto.spi.StandardErrorCode.ALREADY_EXISTS;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_FOUND;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.spi.connector.ConnectorCapabilities.NOT_NULL_COLUMN_CONSTRAINT;
 import static com.facebook.presto.sql.NodeUtils.mapFromProperties;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.DUPLICATE_COLUMN_NAME;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.MISSING_CATALOG;
@@ -56,7 +59,6 @@ import static com.facebook.presto.sql.analyzer.SemanticErrorCode.MISSING_TABLE;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.TABLE_ALREADY_EXISTS;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.TYPE_MISMATCH;
-import static com.facebook.presto.type.UnknownType.UNKNOWN;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 
@@ -95,6 +97,9 @@ public class CreateTableTask
             return immediateFuture(null);
         }
 
+        ConnectorId connectorId = metadata.getCatalogHandle(session, tableName.getCatalogName())
+                .orElseThrow(() -> new PrestoException(NOT_FOUND, "Catalog does not exist: " + tableName.getCatalogName()));
+
         LinkedHashMap<String, ColumnMetadata> columns = new LinkedHashMap<>();
         Map<String, Object> inheritedProperties = ImmutableMap.of();
         boolean includingProperties = false;
@@ -102,14 +107,39 @@ public class CreateTableTask
             if (element instanceof ColumnDefinition) {
                 ColumnDefinition column = (ColumnDefinition) element;
                 String name = column.getName().getValue().toLowerCase(Locale.ENGLISH);
-                Type type = metadata.getType(parseTypeSignature(column.getType()));
-                if ((type == null) || type.equals(UNKNOWN)) {
-                    throw new SemanticException(TYPE_MISMATCH, column, "Unknown type for column '%s' ", column.getName());
+                Type type;
+                try {
+                    type = metadata.getType(parseTypeSignature(column.getType()));
+                }
+                catch (IllegalArgumentException e) {
+                    throw new SemanticException(TYPE_MISMATCH, element, "Unknown type '%s' for column '%s'", column.getType(), column.getName());
+                }
+                if (type.equals(UNKNOWN)) {
+                    throw new SemanticException(TYPE_MISMATCH, element, "Unknown type '%s' for column '%s'", column.getType(), column.getName());
                 }
                 if (columns.containsKey(name)) {
                     throw new SemanticException(DUPLICATE_COLUMN_NAME, column, "Column name '%s' specified more than once", column.getName());
                 }
-                columns.put(name, new ColumnMetadata(name, type, column.getComment().orElse(null), false));
+                if (!column.isNullable() && !metadata.getConnectorCapabilities(session, connectorId).contains(NOT_NULL_COLUMN_CONSTRAINT)) {
+                    throw new SemanticException(NOT_SUPPORTED, column, "Catalog '%s' does not support non-null column for column name '%s'", connectorId.getCatalogName(), column.getName());
+                }
+
+                Map<String, Expression> sqlProperties = mapFromProperties(column.getProperties());
+                Map<String, Object> columnProperties = metadata.getColumnPropertyManager().getProperties(
+                        connectorId,
+                        tableName.getCatalogName(),
+                        sqlProperties,
+                        session,
+                        metadata,
+                        parameters);
+
+                columns.put(name, new ColumnMetadata(
+                        name,
+                        type,
+                        column.isNullable(), column.getComment().orElse(null),
+                        null,
+                        false,
+                        columnProperties));
             }
             else if (element instanceof LikeClause) {
                 LikeClause likeClause = (LikeClause) element;
@@ -137,10 +167,10 @@ public class CreateTableTask
                 likeTableMetadata.getColumns().stream()
                         .filter(column -> !column.isHidden())
                         .forEach(column -> {
-                            if (columns.containsKey(column.getName().toLowerCase())) {
+                            if (columns.containsKey(column.getName().toLowerCase(Locale.ENGLISH))) {
                                 throw new SemanticException(DUPLICATE_COLUMN_NAME, element, "Column name '%s' specified more than once", column.getName());
                             }
-                            columns.put(column.getName().toLowerCase(), column);
+                            columns.put(column.getName().toLowerCase(Locale.ENGLISH), column);
                         });
             }
             else {
@@ -148,10 +178,7 @@ public class CreateTableTask
             }
         }
 
-        accessControl.checkCanCreateTable(session.getRequiredTransactionId(), session.getIdentity(), tableName);
-
-        ConnectorId connectorId = metadata.getCatalogHandle(session, tableName.getCatalogName())
-                .orElseThrow(() -> new PrestoException(NOT_FOUND, "Catalog does not exist: " + tableName.getCatalogName()));
+        accessControl.checkCanCreateTable(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), tableName);
 
         Map<String, Expression> sqlProperties = mapFromProperties(statement.getProperties());
         Map<String, Object> properties = metadata.getTablePropertyManager().getProperties(
@@ -164,7 +191,7 @@ public class CreateTableTask
 
         Map<String, Object> finalProperties = combineProperties(sqlProperties.keySet(), properties, inheritedProperties);
 
-        ConnectorTableMetadata tableMetadata = new ConnectorTableMetadata(tableName.asSchemaTableName(), ImmutableList.copyOf(columns.values()), finalProperties, statement.getComment());
+        ConnectorTableMetadata tableMetadata = new ConnectorTableMetadata(toSchemaTableName(tableName), ImmutableList.copyOf(columns.values()), finalProperties, statement.getComment());
         try {
             metadata.createTable(session, tableName.getCatalogName(), tableMetadata, statement.isNotExists());
         }
@@ -179,8 +206,7 @@ public class CreateTableTask
 
     private static Map<String, Object> combineProperties(Set<String> specifiedPropertyKeys, Map<String, Object> defaultProperties, Map<String, Object> inheritedProperties)
     {
-        Map<String, Object> finalProperties = new HashMap<>();
-        finalProperties.putAll(inheritedProperties);
+        Map<String, Object> finalProperties = new HashMap<>(inheritedProperties);
         for (Map.Entry<String, Object> entry : defaultProperties.entrySet()) {
             if (specifiedPropertyKeys.contains(entry.getKey()) || !finalProperties.containsKey(entry.getKey())) {
                 finalProperties.put(entry.getKey(), entry.getValue());

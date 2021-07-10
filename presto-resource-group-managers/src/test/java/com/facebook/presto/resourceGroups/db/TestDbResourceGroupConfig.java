@@ -13,21 +13,22 @@
  */
 package com.facebook.presto.resourceGroups.db;
 
+import com.facebook.airlift.configuration.testing.ConfigAssertions;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.configuration.testing.ConfigAssertions;
 import org.testng.annotations.Test;
 
 import java.util.Map;
 
-import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
-import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
 
 public class TestDbResourceGroupConfig
 {
     @Test
     public void testDefaults()
     {
-        assertRecordedDefaults(ConfigAssertions.recordDefaults(DbResourceGroupConfig.class).setConfigDbUrl(null));
+        assertRecordedDefaults(ConfigAssertions.recordDefaults(DbResourceGroupConfig.class)
+                .setConfigDbUrl(null));
     }
 
     @Test
@@ -36,7 +37,9 @@ public class TestDbResourceGroupConfig
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
                 .put("resource-groups.config-db-url", "jdbc:mysql//localhost:3306/config?user=presto_admin")
                 .build();
-        DbResourceGroupConfig expected = new DbResourceGroupConfig().setConfigDbUrl("jdbc:mysql//localhost:3306/config?user=presto_admin");
+        DbResourceGroupConfig expected = new DbResourceGroupConfig()
+                .setConfigDbUrl("jdbc:mysql//localhost:3306/config?user=presto_admin");
+
         assertFullMapping(properties, expected);
     }
 }

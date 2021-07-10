@@ -13,42 +13,39 @@
  */
 package com.facebook.presto.operator.project;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.facebook.presto.operator.DriverYieldSignal;
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.relational.RowExpression;
+import com.facebook.presto.operator.Work;
+import com.facebook.presto.spi.relation.RowExpression;
+import com.google.common.collect.ImmutableList;
 
 import java.lang.invoke.MethodHandle;
+import java.util.List;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 
 public class GeneratedPageProjection
         implements PageProjection
 {
-    private final RowExpression projection;
+    private final List<RowExpression> projections;
     private final boolean isDeterministic;
     private final InputChannels inputChannels;
-    private final MethodHandle pageProjectionOutputFactory;
+    private final MethodHandle pageProjectionWorkFactory;
 
-    private BlockBuilder blockBuilder;
+    private List<BlockBuilder> blockBuilders;
 
-    public GeneratedPageProjection(RowExpression projection, boolean isDeterministic, InputChannels inputChannels, MethodHandle pageProjectionOutputFactory)
+    public GeneratedPageProjection(List<RowExpression> projections, boolean isDeterministic, InputChannels inputChannels, MethodHandle pageProjectionWorkFactory)
     {
-        this.projection = requireNonNull(projection, "projection is null");
+        this.projections = ImmutableList.copyOf(requireNonNull(projections, "projections is null"));
         this.isDeterministic = isDeterministic;
         this.inputChannels = requireNonNull(inputChannels, "inputChannels is null");
-        this.pageProjectionOutputFactory = requireNonNull(pageProjectionOutputFactory, "pageProjectionOutputFactory is null");
-        this.blockBuilder = projection.getType().createBlockBuilder(new BlockBuilderStatus(), 1);
-    }
-
-    @Override
-    public Type getType()
-    {
-        return projection.getType();
+        this.pageProjectionWorkFactory = requireNonNull(pageProjectionWorkFactory, "pageProjectionWorkFactory is null");
+        this.blockBuilders = projections.stream().map(RowExpression::getType).map(type -> type.createBlockBuilder(null, 1)).collect(toImmutableList());
     }
 
     @Override
@@ -64,11 +61,11 @@ public class GeneratedPageProjection
     }
 
     @Override
-    public PageProjectionOutput project(ConnectorSession session, DriverYieldSignal yieldSignal, Page page, SelectedPositions selectedPositions)
+    public Work<List<Block>> project(SqlFunctionProperties properties, DriverYieldSignal yieldSignal, Page page, SelectedPositions selectedPositions)
     {
-        blockBuilder = blockBuilder.newBlockBuilderLike(new BlockBuilderStatus());
+        blockBuilders = blockBuilders.stream().map(blockBuilder -> blockBuilder.newBlockBuilderLike(null, selectedPositions.size())).collect(toImmutableList());
         try {
-            return (PageProjectionOutput) pageProjectionOutputFactory.invoke(blockBuilder, session, yieldSignal, page, selectedPositions);
+            return (Work<List<Block>>) pageProjectionWorkFactory.invoke(blockBuilders, properties, page, selectedPositions);
         }
         catch (Throwable e) {
             throw new RuntimeException(e);
@@ -79,7 +76,7 @@ public class GeneratedPageProjection
     public String toString()
     {
         return toStringHelper(this)
-                .add("projection", projection)
+                .add("projections", projections)
                 .toString();
     }
 }

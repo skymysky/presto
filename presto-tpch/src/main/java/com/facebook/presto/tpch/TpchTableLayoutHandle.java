@@ -13,11 +13,13 @@
  */
 package com.facebook.presto.tpch;
 
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ColumnHandle;
+import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.collect.ImmutableMap;
 
 import java.util.Optional;
 
@@ -25,10 +27,10 @@ public class TpchTableLayoutHandle
         implements ConnectorTableLayoutHandle
 {
     private final TpchTableHandle table;
-    private final Optional<TupleDomain<ColumnHandle>> predicate;
+    private final TupleDomain<ColumnHandle> predicate;
 
     @JsonCreator
-    public TpchTableLayoutHandle(@JsonProperty("table") TpchTableHandle table, @JsonProperty("predicate") Optional<TupleDomain<ColumnHandle>> predicate)
+    public TpchTableLayoutHandle(@JsonProperty("table") TpchTableHandle table, @JsonProperty("predicate") TupleDomain<ColumnHandle> predicate)
     {
         this.table = table;
         this.predicate = predicate;
@@ -41,19 +43,23 @@ public class TpchTableLayoutHandle
     }
 
     @JsonProperty
-    public Optional<TupleDomain<ColumnHandle>> getPredicate()
+    public TupleDomain<ColumnHandle> getPredicate()
     {
         return predicate;
-    }
-
-    public String getConnectorId()
-    {
-        return table.getConnectorId();
     }
 
     @Override
     public String toString()
     {
         return table.toString();
+    }
+
+    @Override
+    public Object getIdentifier(Optional<ConnectorSplit> split)
+    {
+        return ImmutableMap.builder()
+                .put("table", table)
+                .put("predicate", predicate)
+                .build();
     }
 }

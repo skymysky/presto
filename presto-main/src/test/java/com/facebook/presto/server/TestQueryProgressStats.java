@@ -13,8 +13,7 @@
  */
 package com.facebook.presto.server;
 
-import io.airlift.json.JsonCodec;
-import org.joda.time.DateTime;
+import com.facebook.airlift.json.JsonCodec;
 import org.testng.annotations.Test;
 
 import java.util.OptionalDouble;
@@ -28,13 +27,14 @@ public class TestQueryProgressStats
     public void testJson()
     {
         QueryProgressStats expected = new QueryProgressStats(
-                DateTime.parse("1991-09-06T05:00-05:30"),
                 123456,
                 1111,
                 22222,
                 3333,
-                444,
+                100000,
                 34230492,
+                34230493,
+                34230494,
                 1000,
                 100000,
                 false,
@@ -44,13 +44,14 @@ public class TestQueryProgressStats
         String json = codec.toJson(expected);
         QueryProgressStats actual = codec.fromJson(json);
 
-        assertEquals(actual.getExecutionStartTime().getMillis(), DateTime.parse("1991-09-06T05:00-05:30").getMillis());
         assertEquals(actual.getElapsedTimeMillis(), 123456);
         assertEquals(actual.getQueuedTimeMillis(), 1111);
         assertEquals(actual.getCpuTimeMillis(), 22222);
         assertEquals(actual.getScheduledTimeMillis(), 3333);
-        assertEquals(actual.getBlockedTimeMillis(), 444);
+        assertEquals(actual.getCurrentMemoryBytes(), 100000);
         assertEquals(actual.getPeakMemoryBytes(), 34230492);
+        assertEquals(actual.getPeakTotalMemoryBytes(), 34230493);
+        assertEquals(actual.getPeakTaskTotalMemoryBytes(), 34230494);
         assertEquals(actual.getInputRows(), 1000);
         assertEquals(actual.getInputBytes(), 100000);
         assertFalse(actual.isBlocked());

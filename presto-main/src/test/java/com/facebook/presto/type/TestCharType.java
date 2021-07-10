@@ -13,14 +13,13 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.CharType;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.CharType;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 
-import static com.facebook.presto.spi.type.CharType.createCharType;
+import static com.facebook.presto.common.type.CharType.createCharType;
 
 public class TestCharType
         extends AbstractTestType
@@ -34,7 +33,7 @@ public class TestCharType
 
     public static Block createTestBlock()
     {
-        BlockBuilder blockBuilder = CHAR_TYPE.createBlockBuilder(new BlockBuilderStatus(), 15);
+        BlockBuilder blockBuilder = CHAR_TYPE.createBlockBuilder(null, 15);
         CHAR_TYPE.writeString(blockBuilder, "apple");
         CHAR_TYPE.writeString(blockBuilder, "apple");
         CHAR_TYPE.writeString(blockBuilder, "apple");

@@ -13,11 +13,13 @@
  */
 package com.facebook.presto.execution.buffer;
 
-import com.facebook.presto.OutputBuffers;
-import com.facebook.presto.OutputBuffers.OutputBufferId;
+import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.execution.StateMachine;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
-import com.facebook.presto.execution.SystemMemoryUsageListener;
+import com.facebook.presto.execution.buffer.OutputBuffers.OutputBufferId;
+import com.facebook.presto.memory.context.LocalMemoryContext;
+import com.facebook.presto.spi.page.SerializedPage;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.DataSize;
@@ -25,18 +27,19 @@ import io.airlift.units.DataSize;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
-import static com.facebook.presto.OutputBuffers.BufferType.PARTITIONED;
 import static com.facebook.presto.execution.buffer.BufferState.FAILED;
 import static com.facebook.presto.execution.buffer.BufferState.FINISHED;
 import static com.facebook.presto.execution.buffer.BufferState.FLUSHING;
 import static com.facebook.presto.execution.buffer.BufferState.NO_MORE_BUFFERS;
 import static com.facebook.presto.execution.buffer.BufferState.NO_MORE_PAGES;
 import static com.facebook.presto.execution.buffer.BufferState.OPEN;
+import static com.facebook.presto.execution.buffer.OutputBuffers.BufferType.PARTITIONED;
+import static com.facebook.presto.execution.buffer.SerializedPageReference.dereferencePages;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static java.util.Objects.requireNonNull;
 
 public class PartitionedOutputBuffer
@@ -45,6 +48,7 @@ public class PartitionedOutputBuffer
     private final StateMachine<BufferState> state;
     private final OutputBuffers outputBuffers;
     private final OutputBufferMemoryManager memoryManager;
+    private final LifespanSerializedPageTracker pageTracker;
 
     private final List<ClientBuffer> partitions;
 
@@ -56,7 +60,7 @@ public class PartitionedOutputBuffer
             StateMachine<BufferState> state,
             OutputBuffers outputBuffers,
             DataSize maxBufferSize,
-            SystemMemoryUsageListener systemMemoryUsageListener,
+            Supplier<LocalMemoryContext> systemMemoryContextSupplier,
             Executor notificationExecutor)
     {
         this.state = requireNonNull(state, "state is null");
@@ -68,12 +72,13 @@ public class PartitionedOutputBuffer
 
         this.memoryManager = new OutputBufferMemoryManager(
                 requireNonNull(maxBufferSize, "maxBufferSize is null").toBytes(),
-                requireNonNull(systemMemoryUsageListener, "systemMemoryUsageListener is null"),
+                requireNonNull(systemMemoryContextSupplier, "systemMemoryContextSupplier is null"),
                 requireNonNull(notificationExecutor, "notificationExecutor is null"));
+        this.pageTracker = new LifespanSerializedPageTracker(memoryManager);
 
         ImmutableList.Builder<ClientBuffer> partitions = ImmutableList.builder();
         for (OutputBufferId bufferId : outputBuffers.getBuffers().keySet()) {
-            ClientBuffer partition = new ClientBuffer(taskInstanceId, bufferId);
+            ClientBuffer partition = new ClientBuffer(taskInstanceId, bufferId, pageTracker);
             partitions.add(partition);
         }
         this.partitions = partitions.build();
@@ -102,6 +107,12 @@ public class PartitionedOutputBuffer
     }
 
     @Override
+    public boolean isOverutilized()
+    {
+        return memoryManager.isOverutilized();
+    }
+
+    @Override
     public OutputBufferInfo getInfo()
     {
         //
@@ -112,13 +123,12 @@ public class PartitionedOutputBuffer
         BufferState state = this.state.get();
 
         int totalBufferedPages = 0;
-        ImmutableList.Builder<BufferInfo> infos = ImmutableList.builder();
+        ImmutableList.Builder<BufferInfo> infos = ImmutableList.builderWithExpectedSize(partitions.size());
         for (ClientBuffer partition : partitions) {
             BufferInfo bufferInfo = partition.getInfo();
             infos.add(bufferInfo);
 
-            PageBufferInfo pageBufferInfo = bufferInfo.getPageBufferInfo();
-            totalBufferedPages += pageBufferInfo.getBufferedPages();
+            totalBufferedPages += bufferInfo.getPageBufferInfo().getBufferedPages();
         }
 
         return new OutputBufferInfo(
@@ -149,44 +159,74 @@ public class PartitionedOutputBuffer
     }
 
     @Override
-    public ListenableFuture<?> enqueue(List<SerializedPage> pages)
+    public ListenableFuture<?> isFull()
     {
-        checkState(partitions.size() == 1, "Expected exactly one partition");
-        return enqueue(0, pages);
+        return memoryManager.getBufferBlockedFuture();
     }
 
     @Override
-    public ListenableFuture<?> enqueue(int partitionNumber, List<SerializedPage> pages)
+    public void registerLifespanCompletionCallback(Consumer<Lifespan> callback)
     {
+        pageTracker.registerLifespanCompletionCallback(callback);
+    }
+
+    @Override
+    public void enqueue(Lifespan lifespan, List<SerializedPage> pages)
+    {
+        checkState(partitions.size() == 1, "Expected exactly one partition");
+        enqueue(lifespan, 0, pages);
+    }
+
+    @Override
+    public void enqueue(Lifespan lifespan, int partitionNumber, List<SerializedPage> pages)
+    {
+        requireNonNull(lifespan, "lifespan is null");
         requireNonNull(pages, "pages is null");
+        checkState(pageTracker.isLifespanCompletionCallbackRegistered(), "lifespanCompletionCallback must be set before enqueueing data");
 
         // ignore pages after "no more pages" is set
         // this can happen with a limit query
-        if (!state.get().canAddPages()) {
-            return immediateFuture(true);
+        if (!state.get().canAddPages() || pageTracker.isNoMorePagesForLifespan(lifespan)) {
+            return;
         }
 
+        ImmutableList.Builder<SerializedPageReference> references = ImmutableList.builderWithExpectedSize(pages.size());
+        long bytesAdded = 0;
+        long rowCount = 0;
+        for (SerializedPage page : pages) {
+            long retainedSize = page.getRetainedSizeInBytes();
+            bytesAdded += retainedSize;
+            rowCount += page.getPositionCount();
+            // create page reference counts with an initial single reference
+            references.add(new SerializedPageReference(page, 1, lifespan));
+        }
+        List<SerializedPageReference> serializedPageReferences = references.build();
+
         // reserve memory
-        long bytesAdded = pages.stream().mapToLong(SerializedPage::getRetainedSizeInBytes).sum();
         memoryManager.updateMemoryUsage(bytesAdded);
 
         // update stats
-        long rowCount = pages.stream().mapToLong(SerializedPage::getPositionCount).sum();
         totalRowsAdded.addAndGet(rowCount);
-        totalPagesAdded.addAndGet(pages.size());
-
-        // create page reference counts with an initial single reference
-        List<SerializedPageReference> serializedPageReferences = pages.stream()
-                .map(bufferedPage -> new SerializedPageReference(bufferedPage, 1, () -> memoryManager.updateMemoryUsage(-bufferedPage.getRetainedSizeInBytes())))
-                .collect(toImmutableList());
+        totalPagesAdded.addAndGet(serializedPageReferences.size());
+        pageTracker.incrementLifespanPageCount(lifespan, serializedPageReferences.size());
 
         // add pages to the buffer (this will increase the reference count by one)
         partitions.get(partitionNumber).enqueuePages(serializedPageReferences);
 
         // drop the initial reference
-        serializedPageReferences.forEach(SerializedPageReference::dereferencePage);
+        dereferencePages(serializedPageReferences, pageTracker);
+    }
 
-        return memoryManager.getNotFullFuture();
+    @Override
+    public void setNoMorePagesForLifespan(Lifespan lifespan)
+    {
+        pageTracker.setNoMorePagesForLifespan(lifespan);
+    }
+
+    @Override
+    public boolean isFinishedForLifespan(Lifespan lifespan)
+    {
+        return pageTracker.isFinishedForLifespan(lifespan);
     }
 
     @Override
@@ -196,6 +236,14 @@ public class PartitionedOutputBuffer
         checkArgument(maxSize.toBytes() > 0, "maxSize must be at least 1 byte");
 
         return partitions.get(outputBufferId.getId()).getPages(startingSequenceId, maxSize);
+    }
+
+    @Override
+    public void acknowledge(OutputBufferId outputBufferId, long sequenceId)
+    {
+        requireNonNull(outputBufferId, "bufferId is null");
+
+        partitions.get(outputBufferId.getId()).acknowledgePages(sequenceId);
     }
 
     @Override
@@ -227,6 +275,7 @@ public class PartitionedOutputBuffer
         if (state.setIf(FINISHED, oldState -> !oldState.isTerminal())) {
             partitions.forEach(ClientBuffer::destroy);
             memoryManager.setNoBlockOnFull();
+            forceFreeMemory();
         }
     }
 
@@ -236,18 +285,37 @@ public class PartitionedOutputBuffer
         // ignore fail if the buffer already in a terminal state.
         if (state.setIf(FAILED, oldState -> !oldState.isTerminal())) {
             memoryManager.setNoBlockOnFull();
+            forceFreeMemory();
             // DO NOT destroy buffers or set no more pages.  The coordinator manages the teardown of failed queries.
         }
     }
 
+    @Override
+    public long getPeakMemoryUsage()
+    {
+        return memoryManager.getPeakMemoryUsage();
+    }
+
+    @VisibleForTesting
+    void forceFreeMemory()
+    {
+        memoryManager.close();
+    }
+
     private void checkFlushComplete()
     {
-        if (state.get() != FLUSHING) {
+        if (state.get() != FLUSHING && state.get() != NO_MORE_BUFFERS) {
             return;
         }
 
         if (partitions.stream().allMatch(ClientBuffer::isDestroyed)) {
             destroy();
         }
+    }
+
+    @VisibleForTesting
+    OutputBufferMemoryManager getMemoryManager()
+    {
+        return memoryManager;
     }
 }

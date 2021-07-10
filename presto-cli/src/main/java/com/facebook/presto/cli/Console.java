@@ -13,23 +13,18 @@
  */
 package com.facebook.presto.cli;
 
+import com.facebook.airlift.log.Logging;
+import com.facebook.airlift.log.LoggingConfiguration;
 import com.facebook.presto.cli.ClientOptions.OutputFormat;
 import com.facebook.presto.client.ClientSession;
-import com.facebook.presto.sql.parser.IdentifierSymbol;
-import com.facebook.presto.sql.parser.ParsingException;
-import com.facebook.presto.sql.parser.SqlParser;
-import com.facebook.presto.sql.parser.SqlParserOptions;
+import com.facebook.presto.spi.security.SelectedRole;
 import com.facebook.presto.sql.parser.StatementSplitter;
-import com.facebook.presto.sql.tree.Identifier;
-import com.facebook.presto.sql.tree.Use;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Files;
 import io.airlift.airline.Command;
 import io.airlift.airline.HelpOption;
-import io.airlift.log.Logging;
-import io.airlift.log.LoggingConfiguration;
 import io.airlift.units.Duration;
 import jline.console.history.FileHistory;
 import jline.console.history.History;
@@ -41,10 +36,10 @@ import javax.inject.Inject;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
@@ -53,31 +48,27 @@ import static com.facebook.presto.cli.Completion.lowerCaseCommandCompleter;
 import static com.facebook.presto.cli.Help.getHelpText;
 import static com.facebook.presto.cli.QueryPreprocessor.preprocessQuery;
 import static com.facebook.presto.client.ClientSession.stripTransactionId;
-import static com.facebook.presto.client.ClientSession.withCatalogAndSchema;
-import static com.facebook.presto.client.ClientSession.withPreparedStatements;
-import static com.facebook.presto.client.ClientSession.withProperties;
-import static com.facebook.presto.client.ClientSession.withTransactionId;
 import static com.facebook.presto.sql.parser.StatementSplitter.Statement;
 import static com.facebook.presto.sql.parser.StatementSplitter.isEmptyStatement;
 import static com.facebook.presto.sql.parser.StatementSplitter.squeezeStatement;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.io.ByteStreams.nullOutputStream;
+import static com.google.common.io.Files.createParentDirs;
+import static com.google.common.util.concurrent.Uninterruptibles.awaitUninterruptibly;
 import static java.lang.Integer.parseInt;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Locale.ENGLISH;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static jline.internal.Configuration.getUserHome;
 
 @Command(name = "presto", description = "Presto interactive console")
 public class Console
-        implements Runnable
 {
     private static final String PROMPT_NAME = "presto";
     private static final Duration EXIT_DELAY = new Duration(3, SECONDS);
-
-    // create a parser with all identifier options enabled, since this is only used for USE statements
-    private static final SqlParser SQL_PARSER = new SqlParser(new SqlParserOptions().allowIdentifierSymbol(EnumSet.allOf(IdentifierSymbol.class)));
 
     private static final Pattern HISTORY_INDEX_PATTERN = Pattern.compile("!\\d+");
 
@@ -90,12 +81,11 @@ public class Console
     @Inject
     public ClientOptions clientOptions = new ClientOptions();
 
-    @Override
-    public void run()
+    public boolean run()
     {
         ClientSession session = clientOptions.toClientSession();
-        boolean hasQuery = !Strings.isNullOrEmpty(clientOptions.execute);
-        boolean isFromFile = !Strings.isNullOrEmpty(clientOptions.file);
+        boolean hasQuery = !isNullOrEmpty(clientOptions.execute);
+        boolean isFromFile = !isNullOrEmpty(clientOptions.file);
 
         if (!hasQuery && !isFromFile) {
             AnsiConsole.systemInstall();
@@ -113,7 +103,7 @@ public class Console
                 throw new RuntimeException("both --execute and --file specified");
             }
             try {
-                query = Files.toString(new File(clientOptions.file), UTF_8);
+                query = Files.asCharSource(new File(clientOptions.file), UTF_8).read();
                 hasQuery = true;
             }
             catch (IOException e) {
@@ -121,17 +111,26 @@ public class Console
             }
         }
 
+        // abort any running query if the CLI is terminated
         AtomicBoolean exiting = new AtomicBoolean();
-        interruptThreadOnExit(Thread.currentThread(), exiting);
+        ThreadInterruptor interruptor = new ThreadInterruptor();
+        CountDownLatch exited = new CountDownLatch(1);
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            exiting.set(true);
+            interruptor.interrupt();
+            awaitUninterruptibly(exited, EXIT_DELAY.toMillis(), MILLISECONDS);
+        }));
 
         try (QueryRunner queryRunner = new QueryRunner(
                 session,
+                clientOptions.debug,
                 Optional.ofNullable(clientOptions.socksProxy),
                 Optional.ofNullable(clientOptions.httpProxy),
                 Optional.ofNullable(clientOptions.keystorePath),
                 Optional.ofNullable(clientOptions.keystorePassword),
                 Optional.ofNullable(clientOptions.truststorePath),
                 Optional.ofNullable(clientOptions.truststorePassword),
+                Optional.ofNullable(clientOptions.accessToken),
                 Optional.ofNullable(clientOptions.user),
                 clientOptions.password ? Optional.of(getPassword()) : Optional.empty(),
                 Optional.ofNullable(clientOptions.krb5Principal),
@@ -139,14 +138,17 @@ public class Console
                 Optional.ofNullable(clientOptions.krb5ConfigPath),
                 Optional.ofNullable(clientOptions.krb5KeytabPath),
                 Optional.ofNullable(clientOptions.krb5CredentialCachePath),
-                !clientOptions.krb5DisableRemoteServiceHostnameCanonicalization,
-                clientOptions.authenticationEnabled)) {
+                !clientOptions.krb5DisableRemoteServiceHostnameCanonicalization)) {
             if (hasQuery) {
-                executeCommand(queryRunner, query, clientOptions.outputFormat);
+                return executeCommand(queryRunner, query, clientOptions.outputFormat, clientOptions.ignoreErrors);
             }
-            else {
-                runConsole(queryRunner, session, exiting);
-            }
+
+            runConsole(queryRunner, exiting);
+            return true;
+        }
+        finally {
+            exited.countDown();
+            interruptor.close();
         }
     }
 
@@ -169,7 +171,7 @@ public class Console
         return "";
     }
 
-    private static void runConsole(QueryRunner queryRunner, ClientSession session, AtomicBoolean exiting)
+    private static void runConsole(QueryRunner queryRunner, AtomicBoolean exiting)
     {
         try (TableNameCompleter tableNameCompleter = new TableNameCompleter(queryRunner);
                 LineReader reader = new LineReader(getHistory(), commandCompleter(), lowerCaseCommandCompleter(), tableNameCompleter)) {
@@ -178,8 +180,9 @@ public class Console
             while (!exiting.get()) {
                 // read a line of input from user
                 String prompt = PROMPT_NAME;
-                if (session.getSchema() != null) {
-                    prompt += ":" + session.getSchema();
+                String schema = queryRunner.getSession().getSchema();
+                if (schema != null) {
+                    prompt += ":" + schema;
                 }
                 if (buffer.length() > 0) {
                     prompt = Strings.repeat(" ", prompt.length() - 1) + "-";
@@ -245,22 +248,12 @@ public class Console
                 String sql = buffer.toString();
                 StatementSplitter splitter = new StatementSplitter(sql, ImmutableSet.of(";", "\\G"));
                 for (Statement split : splitter.getCompleteStatements()) {
-                    Optional<Object> statement = getParsedStatement(split.statement());
-                    if (statement.isPresent() && isSessionParameterChange(statement.get())) {
-                        Map<String, String> properties = queryRunner.getSession().getProperties();
-                        Map<String, String> preparedStatements = queryRunner.getSession().getPreparedStatements();
-                        session = processSessionParameterChange(statement.get(), session, properties, preparedStatements);
-                        queryRunner.setSession(session);
-                        tableNameCompleter.populateCache();
+                    OutputFormat outputFormat = OutputFormat.ALIGNED;
+                    if (split.terminator().equals("\\G")) {
+                        outputFormat = OutputFormat.VERTICAL;
                     }
-                    else {
-                        OutputFormat outputFormat = OutputFormat.ALIGNED;
-                        if (split.terminator().equals("\\G")) {
-                            outputFormat = OutputFormat.VERTICAL;
-                        }
 
-                        process(queryRunner, split.statement(), outputFormat, true);
-                    }
+                    process(queryRunner, split.statement(), outputFormat, tableNameCompleter::populateCache, true);
                     reader.getHistory().add(squeezeStatement(split.statement()) + split.terminator());
                 }
 
@@ -277,46 +270,29 @@ public class Console
         }
     }
 
-    private static Optional<Object> getParsedStatement(String statement)
+    @VisibleForTesting
+    static boolean executeCommand(QueryRunner queryRunner, String query, OutputFormat outputFormat, boolean ignoreErrors)
     {
-        try {
-            return Optional.of((Object) SQL_PARSER.createStatement(statement));
-        }
-        catch (ParsingException e) {
-            return Optional.empty();
-        }
-    }
-
-    static ClientSession processSessionParameterChange(Object parsedStatement, ClientSession session, Map<String, String> existingProperties, Map<String, String> existingPreparedStatements)
-    {
-        if (parsedStatement instanceof Use) {
-            Use use = (Use) parsedStatement;
-            session = withCatalogAndSchema(session, use.getCatalog().map(Identifier::getValue).orElse(session.getCatalog()), use.getSchema().getValue());
-            session = withProperties(session, existingProperties);
-            session = withPreparedStatements(session, existingPreparedStatements);
-        }
-        return session;
-    }
-
-    private static boolean isSessionParameterChange(Object statement)
-    {
-        return statement instanceof Use;
-    }
-
-    private static void executeCommand(QueryRunner queryRunner, String query, OutputFormat outputFormat)
-    {
+        boolean success = true;
         StatementSplitter splitter = new StatementSplitter(query);
         for (Statement split : splitter.getCompleteStatements()) {
             if (!isEmptyStatement(split.statement())) {
-                process(queryRunner, split.statement(), outputFormat, false);
+                if (!process(queryRunner, split.statement(), outputFormat, () -> {}, false)) {
+                    if (!ignoreErrors) {
+                        return false;
+                    }
+                    success = false;
+                }
             }
         }
         if (!isEmptyStatement(splitter.getPartialStatement())) {
             System.err.println("Non-terminated statement: " + splitter.getPartialStatement());
+            return false;
         }
+        return success;
     }
 
-    private static void process(QueryRunner queryRunner, String sql, OutputFormat outputFormat, boolean interactive)
+    private static boolean process(QueryRunner queryRunner, String sql, OutputFormat outputFormat, Runnable schemaChanged, boolean interactive)
     {
         String finalSql;
         try {
@@ -327,23 +303,50 @@ public class Console
         }
         catch (QueryPreprocessorException e) {
             System.err.println(e.getMessage());
-            if (queryRunner.getSession().isDebug()) {
+            if (queryRunner.isDebug()) {
                 e.printStackTrace();
             }
-            return;
+            return false;
         }
 
         try (Query query = queryRunner.startQuery(finalSql)) {
-            query.renderOutput(System.out, outputFormat, interactive);
+            boolean success = query.renderOutput(System.out, outputFormat, interactive);
 
             ClientSession session = queryRunner.getSession();
+
+            // update catalog and schema if present
+            if (query.getSetCatalog().isPresent() || query.getSetSchema().isPresent()) {
+                session = ClientSession.builder(session)
+                        .withCatalog(query.getSetCatalog().orElse(session.getCatalog()))
+                        .withSchema(query.getSetSchema().orElse(session.getSchema()))
+                        .build();
+                schemaChanged.run();
+            }
+
+            // update transaction ID if necessary
+            if (query.isClearTransactionId()) {
+                session = stripTransactionId(session);
+            }
+
+            ClientSession.Builder builder = ClientSession.builder(session);
+
+            if (query.getStartedTransactionId() != null) {
+                builder = builder.withTransactionId(query.getStartedTransactionId());
+            }
 
             // update session properties if present
             if (!query.getSetSessionProperties().isEmpty() || !query.getResetSessionProperties().isEmpty()) {
                 Map<String, String> sessionProperties = new HashMap<>(session.getProperties());
                 sessionProperties.putAll(query.getSetSessionProperties());
                 sessionProperties.keySet().removeAll(query.getResetSessionProperties());
-                session = withProperties(session, sessionProperties);
+                builder = builder.withProperties(sessionProperties);
+            }
+
+            // update session roles
+            if (!query.getSetRoles().isEmpty()) {
+                Map<String, SelectedRole> roles = new HashMap<>(session.getRoles());
+                roles.putAll(query.getSetRoles());
+                builder = builder.withRoles(roles);
             }
 
             // update prepared statements if present
@@ -351,32 +354,53 @@ public class Console
                 Map<String, String> preparedStatements = new HashMap<>(session.getPreparedStatements());
                 preparedStatements.putAll(query.getAddedPreparedStatements());
                 preparedStatements.keySet().removeAll(query.getDeallocatedPreparedStatements());
-                session = withPreparedStatements(session, preparedStatements);
+                builder = builder.withPreparedStatements(preparedStatements);
             }
 
-            // update transaction ID if necessary
-            if (query.isClearTransactionId()) {
-                session = stripTransactionId(session);
-            }
-            if (query.getStartedTransactionId() != null) {
-                session = withTransactionId(session, query.getStartedTransactionId());
+            // update session functions if present
+            if (!query.getAddedSessionFunctions().isEmpty() || !query.getRemovedSessionFunctions().isEmpty()) {
+                Map<String, String> sessionFunctions = new HashMap<>(session.getSessionFunctions());
+                sessionFunctions.putAll(query.getAddedSessionFunctions());
+                sessionFunctions.keySet().removeAll(query.getRemovedSessionFunctions());
+                builder = builder.withSessionFunctions(sessionFunctions);
             }
 
+            session = builder.build();
             queryRunner.setSession(session);
+
+            return success;
         }
         catch (RuntimeException e) {
             System.err.println("Error running command: " + e.getMessage());
-            if (queryRunner.getSession().isDebug()) {
+            if (queryRunner.isDebug()) {
                 e.printStackTrace();
             }
+            return false;
         }
     }
 
     private static MemoryHistory getHistory()
     {
+        String historyFilePath = System.getenv("PRESTO_HISTORY_FILE");
+        File historyFile;
+        if (isNullOrEmpty(historyFilePath)) {
+            historyFile = new File(getUserHome(), ".presto_history");
+        }
+        else {
+            historyFile = new File(historyFilePath);
+        }
+        return getHistory(historyFile);
+    }
+
+    @VisibleForTesting
+    static MemoryHistory getHistory(File historyFile)
+    {
         MemoryHistory history;
-        File historyFile = new File(getUserHome(), ".presto_history");
         try {
+            //  try creating the history file and its parents to check
+            // whether the directory tree is readable/writeable
+            createParentDirs(historyFile.getParentFile());
+            historyFile.createNewFile();
             history = new FileHistory(historyFile);
             history.setMaxSize(10000);
         }
@@ -412,25 +436,9 @@ public class Console
             Logging logging = Logging.initialize();
             logging.configure(config);
         }
-        catch (IOException e) {
-            throw Throwables.propagate(e);
-        }
         finally {
             System.setOut(out);
             System.setErr(err);
         }
-    }
-
-    private static void interruptThreadOnExit(Thread thread, AtomicBoolean exiting)
-    {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            exiting.set(true);
-            thread.interrupt();
-            try {
-                thread.join(EXIT_DELAY.toMillis());
-            }
-            catch (InterruptedException ignored) {
-            }
-        }));
     }
 }

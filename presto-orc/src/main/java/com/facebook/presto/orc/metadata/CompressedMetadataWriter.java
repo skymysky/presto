@@ -13,77 +13,89 @@
  */
 package com.facebook.presto.orc.metadata;
 
+import com.facebook.presto.orc.ColumnWriterOptions;
+import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.OrcOutputBuffer;
-import io.airlift.slice.SliceOutput;
+import io.airlift.slice.DynamicSliceOutput;
+import io.airlift.slice.Slice;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
+
+import static java.lang.Math.toIntExact;
+import static java.util.Objects.requireNonNull;
 
 public class CompressedMetadataWriter
-        implements MetadataWriter
 {
     private final MetadataWriter metadataWriter;
     private final OrcOutputBuffer buffer;
 
-    public CompressedMetadataWriter(MetadataWriter metadataWriter, CompressionKind compression, int bufferSize)
+    public CompressedMetadataWriter(MetadataWriter metadataWriter, ColumnWriterOptions columnWriterOptions, Optional<DwrfDataEncryptor> dwrfEncryptor)
     {
-        this.metadataWriter = metadataWriter;
-        this.buffer = new OrcOutputBuffer(compression, bufferSize);
+        this.metadataWriter = requireNonNull(metadataWriter, "metadataWriter is null");
+        this.buffer = new OrcOutputBuffer(columnWriterOptions, dwrfEncryptor);
     }
 
-    @Override
     public List<Integer> getOrcMetadataVersion()
     {
         return metadataWriter.getOrcMetadataVersion();
     }
 
-    @Override
-    public int writePostscript(SliceOutput output, int footerLength, int metadataLength, CompressionKind compression, int compressionBlockSize)
+    public Slice writePostscript(int footerLength, int metadataLength, CompressionKind compression, int compressionBlockSize, Optional<DwrfStripeCacheData> dwrfStripeCacheData)
             throws IOException
     {
         // postscript is not compressed
-        return metadataWriter.writePostscript(output, footerLength, metadataLength, compression, compressionBlockSize);
+        DynamicSliceOutput output = new DynamicSliceOutput(64);
+        metadataWriter.writePostscript(output, footerLength, metadataLength, compression, compressionBlockSize, dwrfStripeCacheData);
+        return output.slice();
     }
 
-    @Override
-    public int writeMetadata(SliceOutput output, Metadata metadata)
+    public Slice writeDwrfStripeCache(Optional<DwrfStripeCacheData> dwrfStripeCacheData)
             throws IOException
     {
-        buffer.reset();
+        // DWRF stripe cache is already compressed
+        int size = dwrfStripeCacheData.map(DwrfStripeCacheData::getDwrfStripeCacheSize).orElse(0);
+        DynamicSliceOutput output = new DynamicSliceOutput(size);
+        metadataWriter.writeDwrfStripeCache(output, dwrfStripeCacheData);
+        return output.slice();
+    }
+
+    public Slice writeMetadata(Metadata metadata)
+            throws IOException
+    {
         metadataWriter.writeMetadata(buffer, metadata);
-        return buffer.writeDataTo(output);
+        return getSliceOutput();
     }
 
-    @Override
-    public int writeFooter(SliceOutput output, Footer footer)
+    public Slice writeFooter(Footer footer)
             throws IOException
     {
-        buffer.reset();
         metadataWriter.writeFooter(buffer, footer);
-        return buffer.writeDataTo(output);
+        return getSliceOutput();
     }
 
-    @Override
-    public int writeStripeFooter(SliceOutput output, StripeFooter footer)
+    public Slice writeStripeFooter(StripeFooter footer)
             throws IOException
     {
-        buffer.reset();
         metadataWriter.writeStripeFooter(buffer, footer);
-        return buffer.writeDataTo(output);
+        return getSliceOutput();
     }
 
-    @Override
-    public int writeRowIndexes(SliceOutput output, List<RowGroupIndex> rowGroupIndexes)
+    public Slice writeRowIndexes(List<RowGroupIndex> rowGroupIndexes)
             throws IOException
     {
-        buffer.reset();
         metadataWriter.writeRowIndexes(buffer, rowGroupIndexes);
-        return buffer.writeDataTo(output);
+        return getSliceOutput();
     }
 
-    @Override
-    public MetadataReader getMetadataReader()
+    private Slice getSliceOutput()
     {
-        return metadataWriter.getMetadataReader();
+        buffer.close();
+        DynamicSliceOutput output = new DynamicSliceOutput(toIntExact(buffer.getOutputDataSize()));
+        buffer.writeDataTo(output);
+        Slice slice = output.slice();
+        buffer.reset();
+        return slice;
     }
 }

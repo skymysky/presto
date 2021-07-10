@@ -13,21 +13,22 @@
  */
 package com.facebook.presto.resourceGroups;
 
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.airlift.json.JsonCodecFactory;
+import com.facebook.airlift.json.JsonObjectMapperProvider;
 import com.facebook.presto.spi.memory.ClusterMemoryPoolManager;
 import com.facebook.presto.spi.resourceGroups.ResourceGroup;
-import com.facebook.presto.spi.resourceGroups.ResourceGroupSelector;
 import com.facebook.presto.spi.resourceGroups.SelectionContext;
+import com.facebook.presto.spi.resourceGroups.SelectionCriteria;
 import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
-import com.google.common.base.Throwables;
-import io.airlift.json.JsonCodec;
-import io.airlift.json.JsonCodecFactory;
-import io.airlift.json.ObjectMapperProvider;
+import com.google.common.annotations.VisibleForTesting;
 import io.airlift.units.Duration;
 
 import javax.inject.Inject;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.List;
@@ -42,7 +43,7 @@ public class FileResourceGroupConfigurationManager
         extends AbstractResourceConfigurationManager
 {
     private static final JsonCodec<ManagerSpec> CODEC = new JsonCodecFactory(
-            () -> new ObjectMapperProvider().get().enable(FAIL_ON_UNKNOWN_PROPERTIES))
+            () -> new JsonObjectMapperProvider().get().enable(FAIL_ON_UNKNOWN_PROPERTIES))
             .jsonCodec(ManagerSpec.class);
 
     private final List<ResourceGroupSpec> rootGroups;
@@ -60,7 +61,7 @@ public class FileResourceGroupConfigurationManager
             managerSpec = CODEC.fromJson(Files.readAllBytes(Paths.get(config.getConfigFile())));
         }
         catch (IOException e) {
-            throw Throwables.propagate(e);
+            throw new UncheckedIOException(e);
         }
         catch (IllegalArgumentException e) {
             Throwable cause = e.getCause();
@@ -101,13 +102,23 @@ public class FileResourceGroupConfigurationManager
     }
 
     @Override
-    public void configure(ResourceGroup group, SelectionContext context)
+    public void configure(ResourceGroup group, SelectionContext<VariableMap> context)
     {
         Map.Entry<ResourceGroupIdTemplate, ResourceGroupSpec> entry = getMatchingSpec(group, context);
         configureGroup(group, entry.getValue());
     }
 
     @Override
+    public Optional<SelectionContext<VariableMap>> match(SelectionCriteria criteria)
+    {
+        return selectors.stream()
+                .map(s -> s.match(criteria))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .findFirst();
+    }
+
+    @VisibleForTesting
     public List<ResourceGroupSelector> getSelectors()
     {
         return selectors;

@@ -13,34 +13,39 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.execution.Lifespan;
+import com.facebook.presto.memory.context.MemoryTrackingContext;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.testing.TestingSession;
 import com.facebook.presto.testing.TestingTaskContext;
 import com.google.common.util.concurrent.MoreExecutors;
 
+import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static java.util.concurrent.Executors.newScheduledThreadPool;
+import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 
 public class TestingOperatorContext
 {
-    public static OperatorContext create()
+    public static OperatorContext create(ScheduledExecutorService scheduledExecutor)
     {
         Executor executor = MoreExecutors.directExecutor();
-        ScheduledExecutorService scheduledExecutor = newScheduledThreadPool(2, daemonThreadsNamed("test-scheduledExecutor-%s"));
 
         TaskContext taskContext = TestingTaskContext.createTaskContext(
                 executor,
                 scheduledExecutor,
                 TestingSession.testSessionBuilder().build());
 
+        MemoryTrackingContext pipelineMemoryContext = new MemoryTrackingContext(newSimpleAggregatedMemoryContext(), newSimpleAggregatedMemoryContext(), newSimpleAggregatedMemoryContext());
+
         PipelineContext pipelineContext = new PipelineContext(
                 1,
                 taskContext,
                 executor,
                 scheduledExecutor,
+                pipelineMemoryContext,
+                false,
                 false,
                 false);
 
@@ -48,7 +53,9 @@ public class TestingOperatorContext
                 pipelineContext,
                 executor,
                 scheduledExecutor,
-                false);
+                pipelineMemoryContext,
+                Lifespan.taskWide(),
+                Optional.empty());
 
         OperatorContext operatorContext = driverContext.addOperatorContext(
                 1,

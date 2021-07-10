@@ -14,29 +14,35 @@
 package com.facebook.presto.hive;
 
 import com.facebook.presto.hive.metastore.HivePageSinkMetadata;
+import com.facebook.presto.hive.metastore.SortingColumn;
+import com.facebook.presto.spi.PrestoException;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.Optional;
 
+import static com.facebook.presto.spi.StandardErrorCode.GENERIC_USER_ERROR;
 import static java.util.Objects.requireNonNull;
 
 public class HiveWritableTableHandle
 {
-    private final String clientId;
     private final String schemaName;
     private final String tableName;
     private final List<HiveColumnHandle> inputColumns;
     private final String filePrefix;
+
     private HivePageSinkMetadata pageSinkMetadata;
     private final LocationHandle locationHandle;
     private final Optional<HiveBucketProperty> bucketProperty;
+    private final List<SortingColumn> preferredOrderingColumns;
     private final HiveStorageFormat tableStorageFormat;
     private final HiveStorageFormat partitionStorageFormat;
+    private final HiveStorageFormat actualStorageFormat;
+    private final HiveCompressionCodec compressionCodec;
+    private final Optional<EncryptionInformation> encryptionInformation;
 
     public HiveWritableTableHandle(
-            String clientId,
             String schemaName,
             String tableName,
             List<HiveColumnHandle> inputColumns,
@@ -44,10 +50,13 @@ public class HiveWritableTableHandle
             HivePageSinkMetadata pageSinkMetadata,
             LocationHandle locationHandle,
             Optional<HiveBucketProperty> bucketProperty,
+            List<SortingColumn> preferredOrderingColumns,
             HiveStorageFormat tableStorageFormat,
-            HiveStorageFormat partitionStorageFormat)
+            HiveStorageFormat partitionStorageFormat,
+            HiveStorageFormat actualStorageFormat,
+            HiveCompressionCodec compressionCodec,
+            Optional<EncryptionInformation> encryptionInformation)
     {
-        this.clientId = requireNonNull(clientId, "clientId is null");
         this.schemaName = requireNonNull(schemaName, "schemaName is null");
         this.tableName = requireNonNull(tableName, "tableName is null");
         this.inputColumns = ImmutableList.copyOf(requireNonNull(inputColumns, "inputColumns is null"));
@@ -55,14 +64,16 @@ public class HiveWritableTableHandle
         this.pageSinkMetadata = requireNonNull(pageSinkMetadata, "pageSinkMetadata is null");
         this.locationHandle = requireNonNull(locationHandle, "locationHandle is null");
         this.bucketProperty = requireNonNull(bucketProperty, "bucketProperty is null");
+        this.preferredOrderingColumns = requireNonNull(preferredOrderingColumns, "preferredOrderingColumns is null");
         this.tableStorageFormat = requireNonNull(tableStorageFormat, "tableStorageFormat is null");
         this.partitionStorageFormat = requireNonNull(partitionStorageFormat, "partitionStorageFormat is null");
-    }
+        this.actualStorageFormat = requireNonNull(actualStorageFormat, "actualStorageFormat is null");
+        this.compressionCodec = requireNonNull(compressionCodec, "compressionCodec is null");
+        this.encryptionInformation = requireNonNull(encryptionInformation, "encryptionInformation is null");
 
-    @JsonProperty
-    public String getClientId()
-    {
-        return clientId;
+        if (!compressionCodec.isSupportedStorageFormat(actualStorageFormat)) {
+            throw new PrestoException(GENERIC_USER_ERROR, String.format("%s compression is not supported with %s", compressionCodec.name(), actualStorageFormat.name()));
+        }
     }
 
     @JsonProperty
@@ -108,20 +119,52 @@ public class HiveWritableTableHandle
     }
 
     @JsonProperty
+    public List<SortingColumn> getPreferredOrderingColumns()
+    {
+        return preferredOrderingColumns;
+    }
+
+    /* Use {@link #getActualStorageFormat()}*/
+    @Deprecated
+    @JsonProperty
     public HiveStorageFormat getTableStorageFormat()
     {
         return tableStorageFormat;
     }
 
+    /* Use {@link #getActualStorageFormat()}*/
+    @Deprecated
     @JsonProperty
     public HiveStorageFormat getPartitionStorageFormat()
     {
         return partitionStorageFormat;
     }
 
+    /**
+     * The actualStorageFormat is the real storage format that gets used later in the pipeline.
+     * It could be either representing tableStorageFormat, or partitionStorageFormat.
+     */
+    @JsonProperty
+    public HiveStorageFormat getActualStorageFormat()
+    {
+        return actualStorageFormat;
+    }
+
+    @JsonProperty
+    public HiveCompressionCodec getCompressionCodec()
+    {
+        return compressionCodec;
+    }
+
+    @JsonProperty
+    public Optional<EncryptionInformation> getEncryptionInformation()
+    {
+        return encryptionInformation;
+    }
+
     @Override
     public String toString()
     {
-        return clientId + ":" + schemaName + "." + tableName;
+        return schemaName + "." + tableName;
     }
 }

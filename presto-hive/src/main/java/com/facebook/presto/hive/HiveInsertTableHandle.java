@@ -14,6 +14,7 @@
 package com.facebook.presto.hive;
 
 import com.facebook.presto.hive.metastore.HivePageSinkMetadata;
+import com.facebook.presto.hive.metastore.SortingColumn;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -27,7 +28,6 @@ public class HiveInsertTableHandle
 {
     @JsonCreator
     public HiveInsertTableHandle(
-            @JsonProperty("clientId") String clientId,
             @JsonProperty("schemaName") String schemaName,
             @JsonProperty("tableName") String tableName,
             @JsonProperty("inputColumns") List<HiveColumnHandle> inputColumns,
@@ -35,11 +35,14 @@ public class HiveInsertTableHandle
             @JsonProperty("pageSinkMetadata") HivePageSinkMetadata pageSinkMetadata,
             @JsonProperty("locationHandle") LocationHandle locationHandle,
             @JsonProperty("bucketProperty") Optional<HiveBucketProperty> bucketProperty,
+            @JsonProperty("preferredOrderingColumns") List<SortingColumn> preferredOrderingColumns,
             @JsonProperty("tableStorageFormat") HiveStorageFormat tableStorageFormat,
-            @JsonProperty("partitionStorageFormat") HiveStorageFormat partitionStorageFormat)
+            @JsonProperty("partitionStorageFormat") HiveStorageFormat partitionStorageFormat,
+            @JsonProperty("actualStorageFormat") HiveStorageFormat actualStorageFormat,
+            @JsonProperty("compressionCodec") HiveCompressionCodec compressionCodec,
+            @JsonProperty("encryptionInformation") Optional<EncryptionInformation> encryptionInformation)
     {
         super(
-                clientId,
                 schemaName,
                 tableName,
                 inputColumns,
@@ -47,7 +50,11 @@ public class HiveInsertTableHandle
                 pageSinkMetadata,
                 locationHandle,
                 bucketProperty,
+                preferredOrderingColumns,
                 tableStorageFormat,
-                partitionStorageFormat);
+                partitionStorageFormat,
+                actualStorageFormat,
+                compressionCodec,
+                encryptionInformation);
     }
 }

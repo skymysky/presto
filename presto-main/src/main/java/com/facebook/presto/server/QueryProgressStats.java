@@ -14,10 +14,8 @@
 
 package com.facebook.presto.server;
 
-import com.facebook.presto.execution.QueryStats;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import org.joda.time.DateTime;
 
 import java.util.OptionalDouble;
 
@@ -25,13 +23,14 @@ import static java.util.Objects.requireNonNull;
 
 public class QueryProgressStats
 {
-    private final DateTime executionStartTime;
     private final long elapsedTimeMillis;
     private final long queuedTimeMillis;
     private final long cpuTimeMillis;
     private final long scheduledTimeMillis;
-    private final long blockedTimeMillis;
+    private final long currentMemoryBytes;
     private final long peakMemoryBytes;
+    private final long peakTotalMemoryBytes;
+    private final long peakTaskTotalMemoryBytes;
     private final long inputRows;
     private final long inputBytes;
     private final OptionalDouble progressPercentage;
@@ -39,51 +38,48 @@ public class QueryProgressStats
 
     @JsonCreator
     public QueryProgressStats(
-            @JsonProperty("executionStartTime") DateTime executionStartTime,
             @JsonProperty("elapsedTimeMillis") long elapsedTimeMillis,
             @JsonProperty("queuedTimeMillis") long queuedTimeMillis,
             @JsonProperty("cpuTimeMillis") long cpuTimeMillis,
             @JsonProperty("scheduledTimeMillis") long scheduledTimeMillis,
-            @JsonProperty("blockedTimeMillis") long blockedTimeMillis,
+            @JsonProperty("currentMemoryBytes") long currentMemoryBytes,
             @JsonProperty("peakMemoryBytes") long peakMemoryBytes,
+            @JsonProperty("peakTotalMemoryBytes") long peakTotalMemoryBytes,
+            @JsonProperty("peakTaskTotalMemoryBytes") long peakTaskTotalMemoryBytes,
             @JsonProperty("inputRows") long inputRows,
             @JsonProperty("inputBytes") long inputBytes,
             @JsonProperty("blocked") boolean blocked,
             @JsonProperty("progressPercentage") OptionalDouble progressPercentage)
     {
-        this.executionStartTime = requireNonNull(executionStartTime, "executionStartTime is null");
         this.elapsedTimeMillis = elapsedTimeMillis;
         this.queuedTimeMillis = queuedTimeMillis;
         this.cpuTimeMillis = cpuTimeMillis;
         this.scheduledTimeMillis = scheduledTimeMillis;
-        this.blockedTimeMillis = blockedTimeMillis;
+        this.currentMemoryBytes = currentMemoryBytes;
         this.peakMemoryBytes = peakMemoryBytes;
+        this.peakTotalMemoryBytes = peakTotalMemoryBytes;
+        this.peakTaskTotalMemoryBytes = peakTaskTotalMemoryBytes;
         this.inputRows = inputRows;
         this.inputBytes = inputBytes;
         this.blocked = blocked;
         this.progressPercentage = requireNonNull(progressPercentage, "progressPercentage is null");
     }
 
-    public static QueryProgressStats createQueryProgressStats(QueryStats queryStats)
+    public static QueryProgressStats createQueryProgressStats(BasicQueryStats queryStats)
     {
         return new QueryProgressStats(
-                queryStats.getExecutionStartTime(),
                 queryStats.getElapsedTime().toMillis(),
                 queryStats.getQueuedTime().toMillis(),
                 queryStats.getTotalCpuTime().toMillis(),
                 queryStats.getTotalScheduledTime().toMillis(),
-                queryStats.getTotalBlockedTime().toMillis(),
-                queryStats.getPeakMemoryReservation().toBytes(),
+                queryStats.getUserMemoryReservation().toBytes(),
+                queryStats.getPeakUserMemoryReservation().toBytes(),
+                queryStats.getPeakTotalMemoryReservation().toBytes(),
+                queryStats.getPeakTaskTotalMemoryReservation().toBytes(),
                 queryStats.getRawInputPositions(),
                 queryStats.getRawInputDataSize().toBytes(),
                 queryStats.isFullyBlocked(),
                 queryStats.getProgressPercentage());
-    }
-
-    @JsonProperty
-    public DateTime getExecutionStartTime()
-    {
-        return executionStartTime;
     }
 
     @JsonProperty
@@ -111,15 +107,27 @@ public class QueryProgressStats
     }
 
     @JsonProperty
-    public long getBlockedTimeMillis()
+    public long getCurrentMemoryBytes()
     {
-        return blockedTimeMillis;
+        return currentMemoryBytes;
     }
 
     @JsonProperty
     public long getPeakMemoryBytes()
     {
         return peakMemoryBytes;
+    }
+
+    @JsonProperty
+    public long getPeakTotalMemoryBytes()
+    {
+        return peakTotalMemoryBytes;
+    }
+
+    @JsonProperty
+    public long getPeakTaskTotalMemoryBytes()
+    {
+        return peakTaskTotalMemoryBytes;
     }
 
     @JsonProperty

@@ -13,18 +13,19 @@
  */
 package com.facebook.presto.operator.project;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.facebook.presto.operator.DriverYieldSignal;
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.operator.Work;
+
+import java.util.List;
 
 public interface PageProjection
 {
-    Type getType();
-
     boolean isDeterministic();
 
     InputChannels getInputChannels();
 
-    PageProjectionOutput project(ConnectorSession session, DriverYieldSignal yieldSignal, Page page, SelectedPositions selectedPositions);
+    Work<List<Block>> project(SqlFunctionProperties properties, DriverYieldSignal yieldSignal, Page page, SelectedPositions selectedPositions);
 }

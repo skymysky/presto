@@ -14,28 +14,30 @@
 package com.facebook.presto.connector.thrift.integration;
 
 import com.facebook.presto.testing.MaterializedResult;
+import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestIntegrationSmokeTest;
+import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.connector.thrift.integration.ThriftQueryRunner.createThriftQueryRunner;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.tests.QueryAssertions.assertContains;
 
 public class TestThriftIntegrationSmokeTest
         extends AbstractTestIntegrationSmokeTest
 {
-    public TestThriftIntegrationSmokeTest()
+    @Override
+    protected QueryRunner createQueryRunner()
             throws Exception
     {
-        super(() -> createThriftQueryRunner(2, 2));
+        return createThriftQueryRunner(2, 2, false, ImmutableMap.of());
     }
 
     @Override
     @Test
     public void testShowSchemas()
-            throws Exception
     {
-        MaterializedResult actualSchemas = computeActual("SHOW SCHEMAS").toJdbcTypes();
+        MaterializedResult actualSchemas = computeActual("SHOW SCHEMAS").toTestTypes();
         MaterializedResult.Builder resultBuilder = MaterializedResult.resultBuilder(getQueryRunner().getDefaultSession(), VARCHAR)
                 .row("tiny")
                 .row("sf1");

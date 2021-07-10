@@ -13,14 +13,13 @@
  */
 package com.facebook.presto.orc.stream;
 
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.orc.ColumnWriterOptions;
 import com.facebook.presto.orc.OrcOutputBuffer;
 import com.facebook.presto.orc.checkpoint.DecimalStreamCheckpoint;
-import com.facebook.presto.orc.metadata.CompressionKind;
 import com.facebook.presto.orc.metadata.Stream;
-import com.facebook.presto.spi.type.Decimals;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
-import io.airlift.slice.SliceOutput;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.math.BigInteger;
@@ -31,6 +30,7 @@ import java.util.Optional;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
 import static com.facebook.presto.orc.stream.LongDecode.writeVLong;
 import static com.google.common.base.Preconditions.checkState;
+import static java.lang.Math.toIntExact;
 
 /**
  * This is only for mantissa/significant of a decimal and not the exponent.
@@ -44,9 +44,9 @@ public class DecimalOutputStream
 
     private boolean closed;
 
-    public DecimalOutputStream(CompressionKind compression, int bufferSize)
+    public DecimalOutputStream(ColumnWriterOptions columnWriterOptions)
     {
-        this.buffer = new OrcOutputBuffer(compression, bufferSize);
+        this.buffer = new OrcOutputBuffer(columnWriterOptions, Optional.empty());
     }
 
     // todo rewrite without BigInteger
@@ -99,6 +99,7 @@ public class DecimalOutputStream
     public void close()
     {
         closed = true;
+        buffer.close();
     }
 
     @Override
@@ -109,17 +110,15 @@ public class DecimalOutputStream
     }
 
     @Override
-    public Optional<Stream> writeDataStreams(int column, SliceOutput outputStream)
+    public StreamDataOutput getStreamDataOutput(int column)
     {
-        checkState(closed);
-        int length = buffer.writeDataTo(outputStream);
-        return Optional.of(new Stream(column, DATA, length, true));
+        return new StreamDataOutput(buffer::writeDataTo, new Stream(column, DATA, toIntExact(buffer.getOutputDataSize()), true));
     }
 
     @Override
     public long getBufferedBytes()
     {
-        return buffer.size();
+        return buffer.estimateOutputDataSize();
     }
 
     @Override

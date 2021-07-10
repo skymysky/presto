@@ -13,60 +13,63 @@
  */
 package com.facebook.presto.mongodb;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignatureParameter;
 import com.facebook.presto.spi.ConnectorPageSource;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.NamedTypeSignature;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
 import com.mongodb.client.MongoCursor;
 import io.airlift.slice.Slice;
 import org.bson.Document;
 import org.bson.types.Binary;
 import org.bson.types.ObjectId;
-import org.joda.time.chrono.ISOChronology;
 
-import java.io.IOException;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.temporal.ChronoField;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.TimeType.TIME;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.mongodb.ObjectIdType.OBJECT_ID;
 import static com.facebook.presto.mongodb.TypeUtils.isArrayType;
 import static com.facebook.presto.mongodb.TypeUtils.isMapType;
 import static com.facebook.presto.mongodb.TypeUtils.isRowType;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.TimeType.TIME;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Verify.verify;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.airlift.slice.Slices.wrappedBuffer;
 import static java.util.stream.Collectors.toList;
-import static org.joda.time.DateTimeZone.UTC;
 
 public class MongoPageSource
         implements ConnectorPageSource
 {
-    private static final ISOChronology UTC_CHRONOLOGY = ISOChronology.getInstance(UTC);
+    private static final ZoneId UTC_ZONE_ID = ZoneId.of("UTC");
     private static final int ROWS_PER_REQUEST = 1024;
 
     private final MongoCursor<Document> cursor;
     private final List<String> columnNames;
     private final List<Type> columnTypes;
     private Document currentDoc;
-    private long count;
-    private long totalCount;
+    private long completedBytes;
+    private long completedPositions;
     private boolean finished;
+
+    private final PageBuilder pageBuilder;
 
     public MongoPageSource(
             MongoSession mongoSession,
@@ -77,12 +80,20 @@ public class MongoPageSource
         this.columnTypes = columns.stream().map(MongoColumnHandle::getType).collect(toList());
         this.cursor = mongoSession.execute(split, columns);
         currentDoc = null;
+
+        pageBuilder = new PageBuilder(columnTypes);
     }
 
     @Override
     public long getCompletedBytes()
     {
-        return count;
+        return completedBytes;
+    }
+
+    @Override
+    public long getCompletedPositions()
+    {
+        return completedPositions;
     }
 
     @Override
@@ -106,16 +117,14 @@ public class MongoPageSource
     @Override
     public Page getNextPage()
     {
-        PageBuilder pageBuilder = new PageBuilder(columnTypes);
+        verify(pageBuilder.isEmpty());
 
-        count = 0;
         for (int i = 0; i < ROWS_PER_REQUEST; i++) {
             if (!cursor.hasNext()) {
                 finished = true;
                 break;
             }
             currentDoc = cursor.next();
-            count++;
 
             pageBuilder.declarePosition();
             for (int column = 0; column < columnTypes.size(); column++) {
@@ -124,8 +133,13 @@ public class MongoPageSource
             }
         }
 
-        totalCount += count;
-        return pageBuilder.build();
+        Page page = pageBuilder.build();
+        pageBuilder.reset();
+
+        completedBytes += page.getSizeInBytes();
+        completedPositions += page.getPositionCount();
+
+        return page;
     }
 
     private void appendTo(Type type, Object value, BlockBuilder output)
@@ -152,7 +166,7 @@ public class MongoPageSource
                     type.writeLong(output, TimeUnit.MILLISECONDS.toDays(utcMillis));
                 }
                 else if (type.equals(TIME)) {
-                    type.writeLong(output, UTC_CHRONOLOGY.millisOfDay().get(((Date) value).getTime()));
+                    type.writeLong(output, ZonedDateTime.ofInstant(((Date) value).toInstant(), UTC_ZONE_ID).get(ChronoField.MILLI_OF_DAY));
                 }
                 else if (type.equals(TIMESTAMP)) {
                     type.writeLong(output, ((Date) value).getTime());
@@ -180,11 +194,22 @@ public class MongoPageSource
         }
     }
 
+    private String toVarcharValue(Object value)
+    {
+        if (value instanceof Collection<?>) {
+            return "[" + String.join(", ", ((Collection<?>) value).stream().map(this::toVarcharValue).collect(toList())) + "]";
+        }
+        if (value instanceof Document) {
+            return ((Document) value).toJson();
+        }
+        return String.valueOf(value);
+    }
+
     private void writeSlice(BlockBuilder output, Type type, Object value)
     {
         String base = type.getTypeSignature().getBase();
         if (base.equals(StandardTypes.VARCHAR)) {
-            type.writeSlice(output, utf8Slice(value.toString()));
+            type.writeSlice(output, utf8Slice(toVarcharValue(value)));
         }
         else if (type.equals(OBJECT_ID)) {
             type.writeSlice(output, wrappedBuffer(((ObjectId) value).toByteArray()));
@@ -233,18 +258,30 @@ public class MongoPageSource
                 output.closeEntry();
                 return;
             }
+            else if (value instanceof Map) {
+                BlockBuilder builder = output.beginBlockEntry();
+                Map<?, ?> document = (Map<?, ?>) value;
+                for (Map.Entry<?, ?> entry : document.entrySet()) {
+                    appendTo(type.getTypeParameters().get(0), entry.getKey(), builder);
+                    appendTo(type.getTypeParameters().get(1), entry.getValue(), builder);
+                }
+                output.closeEntry();
+                return;
+            }
         }
         else if (isRowType(type)) {
             if (value instanceof Map) {
                 Map<?, ?> mapValue = (Map<?, ?>) value;
                 BlockBuilder builder = output.beginBlockEntry();
-                List<String> fieldNames = type.getTypeSignature().getParameters().stream()
-                        .map(TypeSignatureParameter::getNamedTypeSignature)
-                        .map(NamedTypeSignature::getName)
-                        .collect(Collectors.toList());
+
+                List<String> fieldNames = new ArrayList<>();
+                for (int i = 0; i < type.getTypeSignature().getParameters().size(); i++) {
+                    TypeSignatureParameter parameter = type.getTypeSignature().getParameters().get(i);
+                    fieldNames.add(parameter.getNamedTypeSignature().getName().orElse("field" + i));
+                }
                 checkState(fieldNames.size() == type.getTypeParameters().size(), "fieldName doesn't match with type size : %s", type);
                 for (int index = 0; index < type.getTypeParameters().size(); index++) {
-                    appendTo(type.getTypeParameters().get(index), mapValue.get(fieldNames.get(index).toString()), builder);
+                    appendTo(type.getTypeParameters().get(index), mapValue.get(fieldNames.get(index)), builder);
                 }
                 output.closeEntry();
                 return;
@@ -274,7 +311,6 @@ public class MongoPageSource
 
     @Override
     public void close()
-            throws IOException
     {
         cursor.close();
     }

@@ -13,24 +13,27 @@
  */
 package com.facebook.presto.execution.resourceGroups;
 
-import com.facebook.presto.Session;
-import com.facebook.presto.execution.QueryExecution;
+import com.facebook.airlift.log.Logger;
+import com.facebook.airlift.node.NodeInfo;
+import com.facebook.presto.execution.ManagedQueryExecution;
+import com.facebook.presto.execution.QueryManagerConfig;
 import com.facebook.presto.execution.resourceGroups.InternalResourceGroup.RootInternalResourceGroup;
-import com.facebook.presto.server.ResourceGroupStateInfo;
+import com.facebook.presto.resourcemanager.ResourceGroupService;
+import com.facebook.presto.server.ResourceGroupInfo;
+import com.facebook.presto.server.ServerConfig;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.memory.ClusterMemoryPoolManager;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupConfigurationManager;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupConfigurationManagerContext;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupConfigurationManagerFactory;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
-import com.facebook.presto.spi.resourceGroups.ResourceGroupInfo;
-import com.facebook.presto.spi.resourceGroups.ResourceGroupSelector;
 import com.facebook.presto.spi.resourceGroups.SelectionContext;
+import com.facebook.presto.spi.resourceGroups.SelectionCriteria;
 import com.facebook.presto.sql.tree.Statement;
+import com.facebook.presto.util.PeriodicTaskExecutor;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.log.Logger;
-import io.airlift.node.NodeInfo;
+import io.airlift.units.Duration;
 import org.weakref.jmx.JmxException;
 import org.weakref.jmx.MBeanExporter;
 import org.weakref.jmx.Managed;
@@ -42,93 +45,118 @@ import javax.annotation.concurrent.ThreadSafe;
 import javax.inject.Inject;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.NoSuchElementException;
 import java.util.Optional;
-import java.util.Properties;
+import java.util.OptionalInt;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
-import static com.facebook.presto.SystemSessionProperties.getQueryPriority;
-import static com.facebook.presto.execution.resourceGroups.LegacyResourceGroupConfigurationManagerFactory.LEGACY_RESOURCE_GROUP_MANAGER;
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.presto.spi.StandardErrorCode.QUERY_REJECTED;
+import static com.facebook.presto.util.PropertiesUtil.loadProperties;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
-import static com.google.common.collect.Maps.fromProperties;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static java.lang.String.format;
+import static java.lang.System.currentTimeMillis;
 import static java.util.Objects.requireNonNull;
-import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
+import static java.util.concurrent.Executors.newScheduledThreadPool;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 @ThreadSafe
-public final class InternalResourceGroupManager
-        implements ResourceGroupManager
+public final class InternalResourceGroupManager<C>
+        implements ResourceGroupManager<C>
 {
     private static final Logger log = Logger.get(InternalResourceGroupManager.class);
     private static final File RESOURCE_GROUPS_CONFIGURATION = new File("etc/resource-groups.properties");
     private static final String CONFIGURATION_MANAGER_PROPERTY_NAME = "resource-groups.configuration-manager";
 
-    private final ScheduledExecutorService refreshExecutor = newSingleThreadScheduledExecutor(daemonThreadsNamed("ResourceGroupManager"));
+    private final ScheduledExecutorService refreshExecutor = newScheduledThreadPool(2, daemonThreadsNamed("ResourceGroupManager"));
+    private final PeriodicTaskExecutor resourceGroupRuntimeExecutor;
     private final List<RootInternalResourceGroup> rootGroups = new CopyOnWriteArrayList<>();
     private final ConcurrentMap<ResourceGroupId, InternalResourceGroup> groups = new ConcurrentHashMap<>();
-    private final AtomicReference<ResourceGroupConfigurationManager> configurationManager = new AtomicReference<>();
+    private final AtomicReference<ResourceGroupConfigurationManager<C>> configurationManager;
     private final ResourceGroupConfigurationManagerContext configurationManagerContext;
+    private final ResourceGroupConfigurationManager<?> legacyManager;
     private final MBeanExporter exporter;
     private final AtomicBoolean started = new AtomicBoolean();
     private final AtomicLong lastCpuQuotaGenerationNanos = new AtomicLong(System.nanoTime());
     private final Map<String, ResourceGroupConfigurationManagerFactory> configurationManagerFactories = new ConcurrentHashMap<>();
+    private final AtomicBoolean taskLimitExceeded = new AtomicBoolean();
+    private final int maxTotalRunningTaskCountToNotExecuteNewQuery;
+    private final AtomicLong lastSchedulingCycleRunTimeMs = new AtomicLong(currentTimeMillis());
+    private final ResourceGroupService resourceGroupService;
+    private final AtomicReference<Map<ResourceGroupId, ResourceGroupRuntimeInfo>> resourceGroupRuntimeInfos = new AtomicReference<>(ImmutableMap.of());
+    private final AtomicReference<Map<ResourceGroupId, ResourceGroupRuntimeInfo>> resourceGroupRuntimeInfosSnapshot = new AtomicReference<>(ImmutableMap.of());
+    private final AtomicLong lastUpdatedResourceGroupRuntimeInfo = new AtomicLong(0L);
+    private final double concurrencyThreshold;
+    private final Duration resourceGroupRuntimeInfoRefreshInterval;
+    private final Duration resourceGroupRuntimeInfoMinFreshness;
+    private final boolean isResourceManagerEnabled;
 
     @Inject
-    public InternalResourceGroupManager(LegacyResourceGroupConfigurationManagerFactory builtinFactory, ClusterMemoryPoolManager memoryPoolManager, NodeInfo nodeInfo, MBeanExporter exporter)
+    public InternalResourceGroupManager(
+            LegacyResourceGroupConfigurationManager legacyManager,
+            ClusterMemoryPoolManager memoryPoolManager,
+            QueryManagerConfig queryManagerConfig,
+            NodeInfo nodeInfo,
+            MBeanExporter exporter,
+            ResourceGroupService resourceGroupService,
+            ServerConfig serverConfig)
     {
+        requireNonNull(queryManagerConfig, "queryManagerConfig is null");
         this.exporter = requireNonNull(exporter, "exporter is null");
         this.configurationManagerContext = new ResourceGroupConfigurationManagerContextInstance(memoryPoolManager, nodeInfo.getEnvironment());
-        requireNonNull(builtinFactory, "builtinFactory is null");
-        addConfigurationManagerFactory(builtinFactory);
+        this.legacyManager = requireNonNull(legacyManager, "legacyManager is null");
+        this.configurationManager = new AtomicReference<>(cast(legacyManager));
+        this.maxTotalRunningTaskCountToNotExecuteNewQuery = queryManagerConfig.getMaxTotalRunningTaskCountToNotExecuteNewQuery();
+        this.resourceGroupService = requireNonNull(resourceGroupService, "resourceGroupService is null");
+        this.concurrencyThreshold = queryManagerConfig.getConcurrencyThresholdToEnableResourceGroupRefresh();
+        this.resourceGroupRuntimeInfoRefreshInterval = queryManagerConfig.getResourceGroupRunTimeInfoRefreshInterval();
+        this.resourceGroupRuntimeInfoMinFreshness = queryManagerConfig.getResourceGroupRunTimeInfoMinFreshness();
+        this.isResourceManagerEnabled = requireNonNull(serverConfig, "serverConfig is null").isResourceManagerEnabled();
+        this.resourceGroupRuntimeExecutor = new PeriodicTaskExecutor(resourceGroupRuntimeInfoRefreshInterval.toMillis(), refreshExecutor, this::refreshResourceGroupRuntimeInfo);
     }
 
     @Override
-    public ResourceGroupInfo getResourceGroupInfo(ResourceGroupId id)
+    public ResourceGroupInfo getResourceGroupInfo(ResourceGroupId id, boolean includeQueryInfo, boolean summarizeSubgroups, boolean includeStaticSubgroupsOnly)
     {
         checkArgument(groups.containsKey(id), "Group %s does not exist", id);
-        return groups.get(id).getInfo();
+        return groups.get(id).getResourceGroupInfo(includeQueryInfo, summarizeSubgroups, includeStaticSubgroupsOnly);
     }
 
     @Override
-    public ResourceGroupStateInfo getResourceGroupStateInfo(ResourceGroupId id)
+    public List<ResourceGroupInfo> getPathToRoot(ResourceGroupId id)
     {
-        if (!groups.containsKey(id)) {
-            throw new NoSuchElementException();
-        }
-        return groups.get(id).getStateInfo();
+        checkArgument(groups.containsKey(id), "Group %s does not exist", id);
+        return groups.get(id).getPathToRoot();
     }
 
     @Override
-    public void submit(Statement statement, QueryExecution queryExecution, Executor executor)
+    public void submit(Statement statement, ManagedQueryExecution queryExecution, SelectionContext<C> selectionContext, Executor executor)
     {
         checkState(configurationManager.get() != null, "configurationManager not set");
-        ResourceGroupId group;
-        try {
-            group = selectGroup(queryExecution);
-        }
-        catch (PrestoException e) {
-            queryExecution.fail(e);
-            return;
-        }
-        createGroupIfNecessary(group, queryExecution, executor);
-        groups.get(group).run(queryExecution);
+        createGroupIfNecessary(selectionContext, executor);
+        groups.get(selectionContext.getResourceGroupId()).run(queryExecution);
+    }
+
+    @Override
+    public SelectionContext<C> selectGroup(SelectionCriteria criteria)
+    {
+        return configurationManager.get().match(criteria)
+                .orElseThrow(() -> new PrestoException(QUERY_REJECTED, "Query did not match any selection rule"));
     }
 
     @Override
@@ -152,9 +180,6 @@ public final class InternalResourceGroupManager
 
             setConfigurationManager(configurationManagerName, properties);
         }
-        else {
-            setConfigurationManager(LEGACY_RESOURCE_GROUP_MANAGER, ImmutableMap.of());
-        }
     }
 
     @VisibleForTesting
@@ -168,41 +193,57 @@ public final class InternalResourceGroupManager
         ResourceGroupConfigurationManagerFactory configurationManagerFactory = configurationManagerFactories.get(name);
         checkState(configurationManagerFactory != null, "Resource group configuration manager %s is not registered", name);
 
-        ResourceGroupConfigurationManager configurationManager = configurationManagerFactory.create(ImmutableMap.copyOf(properties), configurationManagerContext);
-        checkState(this.configurationManager.compareAndSet(null, configurationManager), "configurationManager already set");
+        ResourceGroupConfigurationManager<C> configurationManager = cast(configurationManagerFactory.create(ImmutableMap.copyOf(properties), configurationManagerContext));
+        checkState(this.configurationManager.compareAndSet(cast(legacyManager), configurationManager), "configurationManager already set");
 
         log.info("-- Loaded resource group configuration manager %s --", name);
     }
 
+    @SuppressWarnings("ObjectEquality")
     @VisibleForTesting
-    public ResourceGroupConfigurationManager getConfigurationManager()
+    public ResourceGroupConfigurationManager<C> getConfigurationManager()
     {
-        return configurationManager.get();
-    }
-
-    private static Map<String, String> loadProperties(File file)
-            throws Exception
-    {
-        requireNonNull(file, "file is null");
-
-        Properties properties = new Properties();
-        try (FileInputStream in = new FileInputStream(file)) {
-            properties.load(in);
-        }
-        return fromProperties(properties);
+        ResourceGroupConfigurationManager<C> manager = configurationManager.get();
+        checkState(manager != legacyManager, "cannot fetch legacy manager");
+        return manager;
     }
 
     @PreDestroy
     public void destroy()
     {
         refreshExecutor.shutdownNow();
+        resourceGroupRuntimeExecutor.stop();
     }
 
     @PostConstruct
     public void start()
     {
         if (started.compareAndSet(false, true)) {
-            refreshExecutor.scheduleWithFixedDelay(this::refreshAndStartQueries, 1, 1, TimeUnit.MILLISECONDS);
+            refreshExecutor.scheduleWithFixedDelay(() -> {
+                try {
+                    refreshAndStartQueries();
+                    lastSchedulingCycleRunTimeMs.getAndSet(currentTimeMillis());
+                }
+                catch (Throwable t) {
+                    log.error(t, "Error while executing refreshAndStartQueries");
+                    throw t;
+                }
+            }, 1, 1, MILLISECONDS);
+            if (isResourceManagerEnabled) {
+                resourceGroupRuntimeExecutor.start();
+            }
+        }
+    }
+
+    private void refreshResourceGroupRuntimeInfo()
+    {
+        try {
+            List<ResourceGroupRuntimeInfo> resourceGroupInfos = resourceGroupService.getResourceGroupInfo();
+            resourceGroupRuntimeInfos.set(resourceGroupInfos.stream().collect(toImmutableMap(ResourceGroupRuntimeInfo::getResourceGroupId, i -> i)));
+            lastUpdatedResourceGroupRuntimeInfo.set(currentTimeMillis());
+        }
+        catch (Throwable t) {
+            log.error(t, "Error while executing refreshAndStartQueries");
         }
     }
 
@@ -218,7 +259,16 @@ public final class InternalResourceGroupManager
             // nano time has overflowed
             lastCpuQuotaGenerationNanos.set(nanoTime);
         }
+
+        if (maxTotalRunningTaskCountToNotExecuteNewQuery != Integer.MAX_VALUE) {
+            taskLimitExceeded.set(getTotalRunningTaskCount() > maxTotalRunningTaskCountToNotExecuteNewQuery);
+        }
+
+        boolean updatedSnapshot = updateResourceGroupsSnapshot();
         for (RootInternalResourceGroup group : rootGroups) {
+            if (updatedSnapshot) {
+                group.setDirty();
+            }
             try {
                 if (elapsedSeconds > 0) {
                     group.generateCpuQuota(elapsedSeconds);
@@ -228,6 +278,7 @@ public final class InternalResourceGroupManager
                 log.error(e, "Exception while generation cpu quota for %s", group);
             }
             try {
+                group.setTaskLimitExceeded(taskLimitExceeded.get());
                 group.processQueuedQueries();
             }
             catch (RuntimeException e) {
@@ -236,25 +287,52 @@ public final class InternalResourceGroupManager
         }
     }
 
-    private synchronized void createGroupIfNecessary(ResourceGroupId id, QueryExecution queryExecution, Executor executor)
+    private boolean updateResourceGroupsSnapshot()
     {
-        Session session = queryExecution.getSession();
-        SelectionContext context = new SelectionContext(
-                session.getIdentity().getPrincipal().isPresent(),
-                session.getUser(),
-                session.getSource(),
-                getQueryPriority(session),
-                determineQueryType(queryExecution));
+        if (!isResourceManagerEnabled) {
+            return false;
+        }
+        Map<ResourceGroupId, ResourceGroupRuntimeInfo> snapshotValue = resourceGroupRuntimeInfos.getAndAccumulate(
+                resourceGroupRuntimeInfosSnapshot.get(),
+                (current, update) -> current != update ? update : null);
+        if (snapshotValue != null) {
+            resourceGroupRuntimeInfosSnapshot.set(snapshotValue);
+            return true;
+        }
+        return false;
+    }
+
+    private synchronized void createGroupIfNecessary(SelectionContext<C> context, Executor executor)
+    {
+        ResourceGroupId id = context.getResourceGroupId();
         if (!groups.containsKey(id)) {
             InternalResourceGroup group;
             if (id.getParent().isPresent()) {
-                createGroupIfNecessary(id.getParent().get(), queryExecution, executor);
+                createGroupIfNecessary(new SelectionContext<>(id.getParent().get(), context.getContext()), executor);
                 InternalResourceGroup parent = groups.get(id.getParent().get());
                 requireNonNull(parent, "parent is null");
-                group = parent.getOrCreateSubGroup(id.getLastSegment());
+                // parent segments size equals to subgroup segment index
+                int subGroupSegmentIndex = parent.getId().getSegments().size();
+                group = parent.getOrCreateSubGroup(id.getLastSegment(), !context.getFirstDynamicSegmentPosition().equals(OptionalInt.of(subGroupSegmentIndex)));
             }
             else {
-                RootInternalResourceGroup root = new RootInternalResourceGroup(id.getSegments().get(0), this::exportGroup, executor);
+                RootInternalResourceGroup root;
+                if (!isResourceManagerEnabled) {
+                    root = new RootInternalResourceGroup(id.getSegments().get(0), this::exportGroup, executor, ignored -> Optional.empty(), rg -> false);
+                }
+                else {
+                    root = new RootInternalResourceGroup(
+                            id.getSegments().get(0),
+                            this::exportGroup,
+                            executor,
+                            resourceGroupId -> Optional.ofNullable(resourceGroupRuntimeInfosSnapshot.get().get(resourceGroupId)),
+                            rg -> shouldWaitForResourceManagerUpdate(
+                                    rg,
+                                    resourceGroupRuntimeInfosSnapshot::get,
+                                    lastUpdatedResourceGroupRuntimeInfo::get,
+                                    concurrencyThreshold,
+                                    resourceGroupRuntimeInfoMinFreshness));
+                }
                 group = root;
                 rootGroups.add(root);
             }
@@ -279,27 +357,23 @@ public final class InternalResourceGroupManager
         }
     }
 
-    private ResourceGroupId selectGroup(QueryExecution queryExecution)
+    private static boolean shouldWaitForResourceManagerUpdate(
+            InternalResourceGroup resourceGroup,
+            Supplier<Map<ResourceGroupId, ResourceGroupRuntimeInfo>> resourceGroupRuntimeInfos,
+            LongSupplier lastUpdatedResourceGroupRuntimeInfo,
+            double concurrencyThreshold,
+            Duration resourceGroupRuntimeInfoMinFreshness)
     {
-        Session session = queryExecution.getSession();
-        SelectionContext context = new SelectionContext(
-                session.getIdentity().getPrincipal().isPresent(),
-                session.getUser(),
-                session.getSource(),
-                getQueryPriority(session),
-                determineQueryType(queryExecution));
-        for (ResourceGroupSelector selector : configurationManager.get().getSelectors()) {
-            Optional<ResourceGroupId> group = selector.match(context);
-            if (group.isPresent()) {
-                return group.get();
-            }
+        int hardConcurrencyLimit = resourceGroup.getHardConcurrencyLimitBasedOnCpuUsage();
+        int totalRunningQueries = resourceGroup.getRunningQueries();
+        ResourceGroupRuntimeInfo resourceGroupRuntimeInfo = resourceGroupRuntimeInfos.get().get(resourceGroup.getId());
+        if (resourceGroupRuntimeInfo != null) {
+            totalRunningQueries += resourceGroupRuntimeInfo.getRunningQueries() + resourceGroupRuntimeInfo.getDescendantRunningQueries();
         }
-        throw new PrestoException(QUERY_REJECTED, "Query did not match any selection rule");
-    }
-
-    private Optional<String> determineQueryType(QueryExecution queryExecution)
-    {
-        return queryExecution.getQueryType().map(Enum::toString);
+        if (currentTimeMillis() - lastUpdatedResourceGroupRuntimeInfo.getAsLong() > resourceGroupRuntimeInfoMinFreshness.toMillis()) {
+            return true;
+        }
+        return totalRunningQueries >= (hardConcurrencyLimit * concurrencyThreshold) && lastUpdatedResourceGroupRuntimeInfo.getAsLong() <= resourceGroup.getLastRunningQueryStartTime();
     }
 
     @Managed
@@ -315,10 +389,25 @@ public final class InternalResourceGroupManager
         return queriesQueuedInternal;
     }
 
-    private static int getQueriesQueuedOnInternal(InternalResourceGroup resourceGroup)
+    @Managed
+    public long getLastSchedulingCycleRuntimeDelayMs()
+    {
+        return currentTimeMillis() - lastSchedulingCycleRunTimeMs.get();
+    }
+
+    private int getQueriesQueuedOnInternal(InternalResourceGroup resourceGroup)
     {
         if (resourceGroup.subGroups().isEmpty()) {
-            return Math.min(resourceGroup.getQueuedQueries(), resourceGroup.getSoftConcurrencyLimit() - resourceGroup.getRunningQueries());
+            int queuedQueries = resourceGroup.getQueuedQueries();
+            int runningQueries = resourceGroup.getRunningQueries();
+            if (isResourceManagerEnabled) {
+                ResourceGroupRuntimeInfo resourceGroupRuntimeInfo = resourceGroupRuntimeInfos.get().get(resourceGroup.getId());
+                if (resourceGroupRuntimeInfo != null) {
+                    queuedQueries += resourceGroupRuntimeInfo.getQueuedQueries();
+                    runningQueries += resourceGroupRuntimeInfo.getRunningQueries();
+                }
+            }
+            return Math.max(Math.min(queuedQueries, resourceGroup.getSoftConcurrencyLimit() - runningQueries), 0);
         }
 
         int queriesQueuedInternal = 0;
@@ -327,5 +416,37 @@ public final class InternalResourceGroupManager
         }
 
         return queriesQueuedInternal;
+    }
+
+    @Managed
+    public int getTaskLimitExceeded()
+    {
+        return taskLimitExceeded.get() ? 1 : 0;
+    }
+
+    private int getTotalRunningTaskCount()
+    {
+        int taskCount = 0;
+        for (RootInternalResourceGroup rootGroup : rootGroups) {
+            synchronized (rootGroup) {
+                taskCount += rootGroup.getRunningTaskCount();
+            }
+        }
+        return taskCount;
+    }
+
+    @VisibleForTesting
+    public void setTaskLimitExceeded(boolean exceeded)
+    {
+        taskLimitExceeded.set(exceeded);
+        for (RootInternalResourceGroup group : rootGroups) {
+            group.setTaskLimitExceeded(exceeded);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <C> ResourceGroupConfigurationManager<C> cast(ResourceGroupConfigurationManager<?> manager)
+    {
+        return (ResourceGroupConfigurationManager<C>) manager;
     }
 }

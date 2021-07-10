@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
 import org.openjdk.jol.info.ClassLayout;
 
 import javax.annotation.Nullable;
@@ -46,6 +46,12 @@ public final class JoinHash
         this.pagesHash = requireNonNull(pagesHash, "pagesHash is null");
         this.filterFunction = requireNonNull(filterFunction, "filterFunction can not be null").orElse(null);
         this.positionLinks = requireNonNull(positionLinks, "positionLinks is null").orElse(null);
+    }
+
+    @Override
+    public boolean isEmpty()
+    {
+        return getJoinPositionCount() == 0;
     }
 
     @Override

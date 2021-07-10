@@ -13,15 +13,17 @@
  */
 package com.facebook.presto.raptor.metadata;
 
+import com.facebook.airlift.testing.TestingTicker;
 import com.facebook.presto.raptor.backup.BackupStore;
 import com.facebook.presto.raptor.backup.FileBackupStore;
-import com.facebook.presto.raptor.storage.FileStorageService;
+import com.facebook.presto.raptor.filesystem.LocalFileStorageService;
+import com.facebook.presto.raptor.filesystem.LocalOrcDataEnvironment;
 import com.facebook.presto.raptor.storage.StorageService;
 import com.facebook.presto.raptor.util.DaoSupplier;
 import com.facebook.presto.raptor.util.UuidUtil.UuidArgumentFactory;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.testing.TestingTicker;
 import io.airlift.units.Duration;
+import org.apache.hadoop.fs.Path;
 import org.intellij.lang.annotations.Language;
 import org.skife.jdbi.v2.DBI;
 import org.skife.jdbi.v2.Handle;
@@ -36,20 +38,20 @@ import org.testng.annotations.Test;
 
 import java.io.File;
 import java.io.IOException;
-import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
+import static com.facebook.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static com.facebook.presto.raptor.metadata.SchemaDaoUtil.createTablesWithRetry;
 import static com.facebook.presto.raptor.util.UuidUtil.uuidFromBytes;
 import static com.google.common.io.Files.createTempDir;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
-import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static java.util.Arrays.asList;
 import static java.util.UUID.randomUUID;
 import static java.util.concurrent.TimeUnit.HOURS;
@@ -71,15 +73,14 @@ public class TestShardCleaner
 
     @BeforeMethod
     public void setup()
-            throws Exception
     {
-        dbi = new DBI("jdbc:h2:mem:test" + System.nanoTime());
+        dbi = new DBI("jdbc:h2:mem:test" + System.nanoTime() + "_" + ThreadLocalRandom.current().nextInt());
         dummyHandle = dbi.open();
         createTablesWithRetry(dbi);
 
         temporary = createTempDir();
         File directory = new File(temporary, "data");
-        storageService = new FileStorageService(directory);
+        storageService = new LocalFileStorageService(new LocalOrcDataEnvironment(), directory.toURI());
         storageService.start();
 
         File backupDirectory = new File(temporary, "backup");
@@ -96,6 +97,7 @@ public class TestShardCleaner
                 ticker,
                 storageService,
                 Optional.of(backupStore),
+                new LocalOrcDataEnvironment(),
                 config.getMaxTransactionAge(),
                 config.getTransactionCleanerInterval(),
                 config.getLocalCleanerInterval(),
@@ -118,7 +120,6 @@ public class TestShardCleaner
 
     @Test
     public void testAbortOldTransactions()
-            throws Exception
     {
         TestingDao dao = dbi.onDemand(TestingDao.class);
 
@@ -146,7 +147,6 @@ public class TestShardCleaner
 
     @Test
     public void testDeleteOldShards()
-            throws Exception
     {
         assertEquals(cleaner.getBackupShardsQueued().getTotalCount(), 0);
 
@@ -198,7 +198,7 @@ public class TestShardCleaner
         TestingShardDao shardDao = dbi.onDemand(TestingShardDao.class);
         MetadataDao metadataDao = dbi.onDemand(MetadataDao.class);
 
-        long tableId = metadataDao.insertTable("test", "test", false, false, null, 0);
+        long tableId = metadataDao.insertTable("test", "test", false, false, null, 0, false);
 
         UUID shard1 = randomUUID();
         UUID shard2 = randomUUID();
@@ -244,7 +244,7 @@ public class TestShardCleaner
         TestingShardDao shardDao = dbi.onDemand(TestingShardDao.class);
         MetadataDao metadataDao = dbi.onDemand(MetadataDao.class);
 
-        long tableId = metadataDao.insertTable("test", "test", false, false, null, 0);
+        long tableId = metadataDao.insertTable("test", "test", false, false, null, 0, false);
 
         UUID shard1 = randomUUID();
         UUID shard2 = randomUUID();
@@ -341,7 +341,6 @@ public class TestShardCleaner
 
     @Test
     public void testDeleteOldCompletedTransactions()
-            throws Exception
     {
         TestingDao dao = dbi.onDemand(TestingDao.class);
         ShardDao shardDao = dbi.onDemand(ShardDao.class);
@@ -392,14 +391,14 @@ public class TestShardCleaner
 
     private boolean shardFileExists(UUID uuid)
     {
-        return storageService.getStorageFile(uuid).exists();
+        return new File(storageService.getStorageFile(uuid).toString()).exists();
     }
 
     private void createShardFile(UUID uuid)
             throws IOException
     {
-        File file = storageService.getStorageFile(uuid);
-        storageService.createParents(file);
+        File file = new File(storageService.getStorageFile(uuid).toString());
+        storageService.createParents(new Path(file.toURI()));
         assertTrue(file.createNewFile());
     }
 
@@ -420,13 +419,11 @@ public class TestShardCleaner
 
     @SafeVarargs
     private final void assertQuery(@Language("SQL") String sql, List<Object>... rows)
-            throws SQLException
     {
         assertEqualsIgnoreOrder(select(sql), asList(rows));
     }
 
     private List<List<Object>> select(@Language("SQL") String sql)
-            throws SQLException
     {
         return dbi.withHandle(handle -> handle.createQuery(sql)
                 .map((index, rs, context) -> {

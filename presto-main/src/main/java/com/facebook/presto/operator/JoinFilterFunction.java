@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.common.Page;
 
 import javax.annotation.concurrent.NotThreadSafe;
 
 @NotThreadSafe
 public interface JoinFilterFunction
 {
-    boolean filter(int leftAddress, int rightPosition, Page rightPage);
+    boolean filter(int leftPosition, int rightPosition, Page rightPage);
 }

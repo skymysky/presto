@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.security;
 
+import com.facebook.presto.plugin.base.security.SchemaAccessControlRule;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
@@ -23,15 +24,32 @@ import java.util.Optional;
 public class FileBasedSystemAccessControlRules
 {
     private final List<CatalogAccessControlRule> catalogRules;
+    private final Optional<List<PrincipalUserMatchRule>> principalUserMatchRules;
+    private final Optional<List<SchemaAccessControlRule>> schemaRules;
 
     @JsonCreator
-    public FileBasedSystemAccessControlRules(@JsonProperty("catalogs") Optional<List<CatalogAccessControlRule>> catalogRules)
+    public FileBasedSystemAccessControlRules(
+            @JsonProperty("catalogs") Optional<List<CatalogAccessControlRule>> catalogRules,
+            @JsonProperty("principals") Optional<List<PrincipalUserMatchRule>> principalUserMatchRules,
+            @JsonProperty("schemas") Optional<List<SchemaAccessControlRule>> schemaRules)
     {
         this.catalogRules = catalogRules.map(ImmutableList::copyOf).orElse(ImmutableList.of());
+        this.principalUserMatchRules = principalUserMatchRules.map(ImmutableList::copyOf);
+        this.schemaRules = schemaRules.map(ImmutableList::copyOf);
     }
 
     public List<CatalogAccessControlRule> getCatalogRules()
     {
         return catalogRules;
+    }
+
+    public Optional<List<PrincipalUserMatchRule>> getPrincipalUserMatchRules()
+    {
+        return principalUserMatchRules;
+    }
+
+    public Optional<List<SchemaAccessControlRule>> getSchemaRules()
+    {
+        return schemaRules;
     }
 }

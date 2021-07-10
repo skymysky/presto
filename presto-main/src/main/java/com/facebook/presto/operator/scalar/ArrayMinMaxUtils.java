@@ -14,13 +14,15 @@
 package com.facebook.presto.operator.scalar;
 
 import com.facebook.presto.annotation.UsedByGeneratedCode;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
 import io.airlift.slice.Slice;
 
 import java.lang.invoke.MethodHandle;
 
 import static com.facebook.presto.util.Failures.internalError;
+import static java.lang.Double.NaN;
+import static java.lang.Double.isNaN;
 
 public final class ArrayMinMaxUtils
 {
@@ -86,18 +88,22 @@ public final class ArrayMinMaxUtils
                 return null;
             }
 
+            boolean containNull = false;
             double selectedValue = elementType.getDouble(block, 0);
             for (int i = 0; i < block.getPositionCount(); i++) {
                 if (block.isNull(i)) {
-                    return null;
+                    containNull = true;
                 }
                 double value = elementType.getDouble(block, i);
                 if ((boolean) compareMethodHandle.invokeExact(value, selectedValue)) {
                     selectedValue = value;
                 }
+                else if (isNaN(value)) {
+                    return NaN;
+                }
             }
 
-            return selectedValue;
+            return containNull ? null : selectedValue;
         }
         catch (Throwable t) {
             throw internalError(t);

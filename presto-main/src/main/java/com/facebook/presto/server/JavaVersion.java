@@ -27,15 +27,15 @@ import static java.lang.String.format;
 // TODO: remove this when we upgrade to Java 9 (replace with java.lang.Runtime.getVersion())
 public class JavaVersion
 {
-    // As described in JEP-223
-    private static final String VERSION_NUMBER = "(?<MAJOR>[1-9][0-9]*)(\\.(?<MINOR>(0|[1-9][0-9]*))(\\.(?:(0|[1-9][0-9]*)))?)?";
+    // As described in JEP-223 and JEP-322
+    private static final String VERSION_NUMBER = "(?<MAJOR>[1-9][0-9]*)(\\.(?<MINOR>(0|[1-9][0-9]*))(\\.(?:(0|[1-9][0-9]*)))?)*";
     private static final String PRE = "(?:-(?:[a-zA-Z0-9]+))?";
     private static final String BUILD = "(?:(?:\\+)(?:0|[1-9][0-9]*)?)?";
     private static final String OPT = "(?:-(?:[-a-zA-Z0-9.]+))?";
     private static final Pattern PATTERN = Pattern.compile(VERSION_NUMBER + PRE + BUILD + OPT);
 
     // For Java 8 and below
-    private static final Pattern LEGACY_PATTERN = Pattern.compile("1\\.(?<MAJOR>[0-9]+)(\\.(?<MINOR>(0|[1-9][0-9]*)))?(_(?<UPDATE>[1-9][0-9]*))?(?:-ea)?");
+    private static final Pattern LEGACY_PATTERN = Pattern.compile("1\\.(?<MAJOR>[0-9]+)(\\.(?<MINOR>(0|[1-9][0-9]*)))?(_(?<UPDATE>[1-9][0-9]*))?" + OPT);
 
     private final int major;
     private final int minor;

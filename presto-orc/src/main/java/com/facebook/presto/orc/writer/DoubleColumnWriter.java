@@ -13,10 +13,14 @@
  */
 package com.facebook.presto.orc.writer;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.ColumnWriterOptions;
+import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.checkpoint.BooleanStreamCheckpoint;
 import com.facebook.presto.orc.checkpoint.DoubleStreamCheckpoint;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
-import com.facebook.presto.orc.metadata.CompressionKind;
+import com.facebook.presto.orc.metadata.CompressedMetadataWriter;
 import com.facebook.presto.orc.metadata.MetadataWriter;
 import com.facebook.presto.orc.metadata.RowGroupIndex;
 import com.facebook.presto.orc.metadata.Stream;
@@ -25,11 +29,10 @@ import com.facebook.presto.orc.metadata.statistics.ColumnStatistics;
 import com.facebook.presto.orc.metadata.statistics.DoubleStatisticsBuilder;
 import com.facebook.presto.orc.stream.DoubleOutputStream;
 import com.facebook.presto.orc.stream.PresentOutputStream;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.orc.stream.StreamDataOutput;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.slice.SliceOutput;
+import io.airlift.slice.Slice;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.io.IOException;
@@ -55,21 +58,27 @@ public class DoubleColumnWriter
     private final boolean compressed;
     private final DoubleOutputStream dataStream;
     private final PresentOutputStream presentStream;
+    private final CompressedMetadataWriter metadataWriter;
 
     private final List<ColumnStatistics> rowGroupColumnStatistics = new ArrayList<>();
+    private long columnStatisticsRetainedSizeInBytes;
 
     private DoubleStatisticsBuilder statisticsBuilder = new DoubleStatisticsBuilder();
 
     private boolean closed;
 
-    public DoubleColumnWriter(int column, Type type, CompressionKind compression, int bufferSize)
+    public DoubleColumnWriter(int column, Type type, ColumnWriterOptions columnWriterOptions, Optional<DwrfDataEncryptor> dwrfEncryptor, MetadataWriter metadataWriter)
     {
         checkArgument(column >= 0, "column is negative");
+        requireNonNull(columnWriterOptions, "columnWriterOptions is null");
+        requireNonNull(dwrfEncryptor, "dwrfEncryptor is null");
+        requireNonNull(metadataWriter, "metadataWriter is null");
         this.column = column;
         this.type = requireNonNull(type, "type is null");
-        this.compressed = requireNonNull(compression, "compression is null") != NONE;
-        this.dataStream = new DoubleOutputStream(compression, bufferSize);
-        this.presentStream = new PresentOutputStream(compression, bufferSize);
+        this.compressed = columnWriterOptions.getCompressionKind() != NONE;
+        this.dataStream = new DoubleOutputStream(columnWriterOptions, dwrfEncryptor);
+        this.presentStream = new PresentOutputStream(columnWriterOptions, dwrfEncryptor);
+        this.metadataWriter = new CompressedMetadataWriter(metadataWriter, columnWriterOptions, dwrfEncryptor);
     }
 
     @Override
@@ -112,6 +121,7 @@ public class DoubleColumnWriter
         checkState(!closed);
         ColumnStatistics statistics = statisticsBuilder.buildColumnStatistics();
         rowGroupColumnStatistics.add(statistics);
+        columnStatisticsRetainedSizeInBytes += statistics.getRetainedSizeInBytes();
         statisticsBuilder = new DoubleStatisticsBuilder();
         return ImmutableMap.of(column, statistics);
     }
@@ -132,7 +142,7 @@ public class DoubleColumnWriter
     }
 
     @Override
-    public List<Stream> writeIndexStreams(SliceOutput outputStream, MetadataWriter metadataWriter)
+    public List<StreamDataOutput> getIndexStreams()
             throws IOException
     {
         checkState(closed);
@@ -150,8 +160,9 @@ public class DoubleColumnWriter
             rowGroupIndexes.add(new RowGroupIndex(positions, columnStatistics));
         }
 
-        int length = metadataWriter.writeRowIndexes(outputStream, rowGroupIndexes.build());
-        return ImmutableList.of(new Stream(column, StreamKind.ROW_INDEX, length, false));
+        Slice slice = metadataWriter.writeRowIndexes(rowGroupIndexes.build());
+        Stream stream = new Stream(column, StreamKind.ROW_INDEX, slice.length(), false);
+        return ImmutableList.of(new StreamDataOutput(slice, stream));
     }
 
     private static List<Integer> createDoubleColumnPositionList(
@@ -166,15 +177,14 @@ public class DoubleColumnWriter
     }
 
     @Override
-    public List<Stream> writeDataStreams(SliceOutput outputStream)
-            throws IOException
+    public List<StreamDataOutput> getDataStreams()
     {
         checkState(closed);
 
-        ImmutableList.Builder<Stream> dataStreams = ImmutableList.builder();
-        presentStream.writeDataStreams(column, outputStream).ifPresent(dataStreams::add);
-        dataStream.writeDataStreams(column, outputStream).ifPresent(dataStreams::add);
-        return dataStreams.build();
+        ImmutableList.Builder<StreamDataOutput> outputDataStreams = ImmutableList.builder();
+        presentStream.getStreamDataOutput(column).ifPresent(outputDataStreams::add);
+        outputDataStreams.add(dataStream.getStreamDataOutput(column));
+        return outputDataStreams.build();
     }
 
     @Override
@@ -186,8 +196,7 @@ public class DoubleColumnWriter
     @Override
     public long getRetainedBytes()
     {
-        // NOTE: we do not include stats because they should be small and it would be annoying to calculate the size
-        return INSTANCE_SIZE + dataStream.getRetainedBytes() + presentStream.getRetainedBytes();
+        return INSTANCE_SIZE + dataStream.getRetainedBytes() + presentStream.getRetainedBytes() + columnStatisticsRetainedSizeInBytes;
     }
 
     @Override
@@ -197,6 +206,7 @@ public class DoubleColumnWriter
         dataStream.reset();
         presentStream.reset();
         rowGroupColumnStatistics.clear();
+        columnStatisticsRetainedSizeInBytes = 0;
         statisticsBuilder = new DoubleStatisticsBuilder();
     }
 }

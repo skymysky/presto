@@ -13,15 +13,16 @@
  */
 package com.facebook.presto.connector.thrift;
 
+import com.facebook.airlift.bootstrap.LifeCycleManager;
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.spi.connector.Connector;
+import com.facebook.presto.spi.connector.ConnectorIndexProvider;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorPageSourceProvider;
 import com.facebook.presto.spi.connector.ConnectorSplitManager;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.facebook.presto.spi.session.PropertyMetadata;
 import com.facebook.presto.spi.transaction.IsolationLevel;
-import io.airlift.bootstrap.LifeCycleManager;
-import io.airlift.log.Logger;
 
 import javax.inject.Inject;
 
@@ -39,6 +40,7 @@ public class ThriftConnector
     private final ThriftSplitManager splitManager;
     private final ThriftPageSourceProvider pageSourceProvider;
     private final ThriftSessionProperties sessionProperties;
+    private final ThriftIndexProvider indexProvider;
 
     @Inject
     public ThriftConnector(
@@ -46,13 +48,15 @@ public class ThriftConnector
             ThriftMetadata metadata,
             ThriftSplitManager splitManager,
             ThriftPageSourceProvider pageSourceProvider,
-            ThriftSessionProperties sessionProperties)
+            ThriftSessionProperties sessionProperties,
+            ThriftIndexProvider indexProvider)
     {
         this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.metadata = requireNonNull(metadata, "metadata is null");
         this.splitManager = requireNonNull(splitManager, "splitManager is null");
         this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
         this.sessionProperties = requireNonNull(sessionProperties, "sessionProperties is null");
+        this.indexProvider = requireNonNull(indexProvider, "indexProvider is null");
     }
 
     @Override
@@ -86,14 +90,16 @@ public class ThriftConnector
     }
 
     @Override
+    public ConnectorIndexProvider getIndexProvider()
+    {
+        return indexProvider;
+    }
+
+    @Override
     public final void shutdown()
     {
         try {
             lifeCycleManager.stop();
-        }
-        catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            log.error(ie, "Interrupted while shutting down connector");
         }
         catch (Exception e) {
             log.error(e, "Error shutting down connector");

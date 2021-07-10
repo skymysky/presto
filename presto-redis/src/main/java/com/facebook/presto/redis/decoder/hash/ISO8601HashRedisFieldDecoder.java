@@ -13,40 +13,26 @@
  */
 package com.facebook.presto.redis.decoder.hash;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.decoder.DecoderColumnHandle;
 import com.facebook.presto.decoder.FieldValueProvider;
-import com.facebook.presto.spi.type.Type;
-import com.google.common.collect.ImmutableSet;
 import org.joda.time.format.DateTimeFormatter;
 import org.joda.time.format.ISODateTimeFormat;
 
 import java.util.Locale;
-import java.util.Set;
 
-import static com.facebook.presto.spi.type.DateTimeEncoding.packDateTimeWithZone;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.TimeType.TIME;
-import static com.facebook.presto.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.DateTimeEncoding.packDateTimeWithZone;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.TimeType.TIME;
+import static com.facebook.presto.common.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 class ISO8601HashRedisFieldDecoder
         extends HashRedisFieldDecoder
 {
     private static final DateTimeFormatter FORMATTER = ISODateTimeFormat.dateTimeParser().withLocale(Locale.ENGLISH).withZoneUTC();
-
-    @Override
-    public Set<Class<?>> getJavaTypes()
-    {
-        return ImmutableSet.of(long.class);
-    }
-
-    @Override
-    public String getFieldDecoderName()
-    {
-        return "iso8601";
-    }
 
     @Override
     public FieldValueProvider decode(String value, DecoderColumnHandle columnHandle)
@@ -65,10 +51,6 @@ class ISO8601HashRedisFieldDecoder
         @Override
         public long getLong()
         {
-            if (isNull()) {
-                return 0L;
-            }
-
             long millis = FORMATTER.parseMillis(getSlice().toStringAscii());
 
             Type type = columnHandle.getType();

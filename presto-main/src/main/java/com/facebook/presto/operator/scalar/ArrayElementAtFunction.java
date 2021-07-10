@@ -13,14 +13,14 @@
  */
 package com.facebook.presto.operator.scalar;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlNullable;
 import com.facebook.presto.spi.function.SqlType;
 import com.facebook.presto.spi.function.TypeParameter;
-import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
@@ -31,15 +31,6 @@ import static java.lang.Math.toIntExact;
 public final class ArrayElementAtFunction
 {
     private ArrayElementAtFunction() {}
-
-    @TypeParameter("E")
-    @SqlNullable
-    @SqlType("E")
-    public static Void voidElementAt(@SqlType("array(E)") Block array, @SqlType("bigint") long index)
-    {
-        checkedIndexToBlockPosition(array, index);
-        return null;
-    }
 
     @TypeParameter("E")
     @SqlNullable

@@ -13,15 +13,14 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 
 import java.util.List;
 
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.util.StructuralTestUtil.arrayBlockOf;
 
 public class TestSmallintArrayType
@@ -29,12 +28,12 @@ public class TestSmallintArrayType
 {
     public TestSmallintArrayType()
     {
-        super(new TypeRegistry().getType(parseTypeSignature("array(smallint)")), List.class, createTestBlock(new TypeRegistry().getType(parseTypeSignature("array(smallint)"))));
+        super(functionAndTypeManager.getType(parseTypeSignature("array(smallint)")), List.class, createTestBlock(functionAndTypeManager.getType(parseTypeSignature("array(smallint)"))));
     }
 
     public static Block createTestBlock(Type arrayType)
     {
-        BlockBuilder blockBuilder = arrayType.createBlockBuilder(new BlockBuilderStatus(), 4);
+        BlockBuilder blockBuilder = arrayType.createBlockBuilder(null, 4);
         arrayType.writeObject(blockBuilder, arrayBlockOf(SMALLINT, 1, 2));
         arrayType.writeObject(blockBuilder, arrayBlockOf(SMALLINT, 1, 2, 3));
         arrayType.writeObject(blockBuilder, arrayBlockOf(SMALLINT, 1, 2, 3));
@@ -46,7 +45,7 @@ public class TestSmallintArrayType
     protected Object getGreaterValue(Object value)
     {
         Block block = (Block) value;
-        BlockBuilder blockBuilder = SMALLINT.createBlockBuilder(new BlockBuilderStatus(), block.getPositionCount() + 1);
+        BlockBuilder blockBuilder = SMALLINT.createBlockBuilder(null, block.getPositionCount() + 1);
         for (int i = 0; i < block.getPositionCount(); i++) {
             SMALLINT.appendTo(block, i, blockBuilder);
         }

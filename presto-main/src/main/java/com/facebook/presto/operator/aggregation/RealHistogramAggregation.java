@@ -13,19 +13,18 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.function.AggregationFunction;
 import com.facebook.presto.spi.function.AggregationState;
 import com.facebook.presto.spi.function.CombineFunction;
 import com.facebook.presto.spi.function.InputFunction;
 import com.facebook.presto.spi.function.OutputFunction;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
 
 import java.util.Map;
 
-import static com.facebook.presto.spi.type.RealType.REAL;
+import static com.facebook.presto.common.type.RealType.REAL;
 import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Float.intBitsToFloat;
 
@@ -62,13 +61,11 @@ public class RealHistogramAggregation
         }
         else {
             Map<Double, Double> value = state.get().getBuckets();
-            BlockBuilder blockBuilder = REAL.createBlockBuilder(null, value.size() * 2);
+            BlockBuilder entryBuilder = out.beginBlockEntry();
             for (Map.Entry<Double, Double> entry : value.entrySet()) {
-                REAL.writeLong(blockBuilder, floatToRawIntBits(entry.getKey().floatValue()));
-                REAL.writeLong(blockBuilder, floatToRawIntBits(entry.getValue().floatValue()));
+                REAL.writeLong(entryBuilder, floatToRawIntBits(entry.getKey().floatValue()));
+                REAL.writeLong(entryBuilder, floatToRawIntBits(entry.getValue().floatValue()));
             }
-            Block block = blockBuilder.build();
-            out.writeObject(block);
             out.closeEntry();
         }
     }

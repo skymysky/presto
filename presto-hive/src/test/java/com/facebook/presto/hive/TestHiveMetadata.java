@@ -13,31 +13,38 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.predicate.NullableValue;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.common.type.VarcharType;
+import com.facebook.presto.hive.metastore.SortingColumn;
+import com.facebook.presto.hive.metastore.Storage;
 import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.NullableValue;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.predicate.TupleDomain.ColumnDomain;
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.spi.type.VarcharType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
 import org.testng.annotations.Test;
 
+import java.util.List;
 import java.util.Optional;
 
 import static com.facebook.presto.hive.HiveMetadata.createPredicate;
+import static com.facebook.presto.hive.HiveMetadata.decodePreferredOrderingColumnsFromStorage;
+import static com.facebook.presto.hive.HiveMetadata.encodePreferredOrderingColumns;
+import static com.facebook.presto.hive.HiveTableProperties.PREFERRED_ORDERING_COLUMNS;
+import static com.facebook.presto.hive.metastore.SortingColumn.Order.ASCENDING;
+import static com.facebook.presto.hive.metastore.SortingColumn.Order.DESCENDING;
+import static com.facebook.presto.hive.metastore.StorageFormat.VIEW_STORAGE_FORMAT;
+import static org.testng.Assert.assertEquals;
 
 public class TestHiveMetadata
 {
     private static final HiveColumnHandle TEST_COLUMN_HANDLE = new HiveColumnHandle(
             "test",
-            "test",
             HiveType.HIVE_STRING,
             TypeSignature.parseTypeSignature("varchar"),
             0,
             HiveColumnHandle.ColumnType.PARTITION_KEY,
+            Optional.empty(),
             Optional.empty());
 
     @Test(timeOut = 5000)
@@ -46,12 +53,10 @@ public class TestHiveMetadata
         ImmutableList.Builder<HivePartition> partitions = ImmutableList.builder();
 
         for (int i = 0; i < 5_000; i++) {
-            ColumnDomain<HiveColumnHandle> columnDomain = new ColumnDomain<>(TEST_COLUMN_HANDLE, Domain.singleValue(VarcharType.VARCHAR, Slices.utf8Slice(Integer.toString(i))));
-            TupleDomain<HiveColumnHandle> tupleDomain = TupleDomain.fromColumnDomains(Optional.of(ImmutableList.of(columnDomain)));
             partitions.add(new HivePartition(
                     new SchemaTableName("test", "test"),
                     Integer.toString(i),
-                    ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.of(VarcharType.VARCHAR, Slices.utf8Slice(Integer.toString(i)))), ImmutableList.of()));
+                    ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.of(VarcharType.VARCHAR, Slices.utf8Slice(Integer.toString(i))))));
         }
 
         createPredicate(ImmutableList.of(TEST_COLUMN_HANDLE), partitions.build());
@@ -63,12 +68,10 @@ public class TestHiveMetadata
         ImmutableList.Builder<HivePartition> partitions = ImmutableList.builder();
 
         for (int i = 0; i < 5; i++) {
-            ColumnDomain<HiveColumnHandle> columnDomain = new ColumnDomain<>(TEST_COLUMN_HANDLE, Domain.onlyNull(VarcharType.VARCHAR));
-            TupleDomain<HiveColumnHandle> tupleDomain = TupleDomain.fromColumnDomains(Optional.of(ImmutableList.of(columnDomain)));
             partitions.add(new HivePartition(
                     new SchemaTableName("test", "test"),
                     Integer.toString(i),
-                    ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.asNull(VarcharType.VARCHAR)), ImmutableList.of()));
+                    ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.asNull(VarcharType.VARCHAR))));
         }
 
         createPredicate(ImmutableList.of(TEST_COLUMN_HANDLE), partitions.build());
@@ -80,21 +83,43 @@ public class TestHiveMetadata
         ImmutableList.Builder<HivePartition> partitions = ImmutableList.builder();
 
         for (int i = 0; i < 5; i++) {
-            ColumnDomain<HiveColumnHandle> columnDomain = new ColumnDomain<>(TEST_COLUMN_HANDLE, Domain.singleValue(VarcharType.VARCHAR, Slices.utf8Slice(Integer.toString(i))));
-            TupleDomain<HiveColumnHandle> tupleDomain = TupleDomain.fromColumnDomains(Optional.of(ImmutableList.of(columnDomain)));
             partitions.add(new HivePartition(
                     new SchemaTableName("test", "test"),
                     Integer.toString(i),
-                    ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.of(VarcharType.VARCHAR, Slices.utf8Slice(Integer.toString(i)))), ImmutableList.of()));
+                    ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.of(VarcharType.VARCHAR, Slices.utf8Slice(Integer.toString(i))))));
         }
 
-        ColumnDomain<HiveColumnHandle> columnDomain = new ColumnDomain<>(TEST_COLUMN_HANDLE, Domain.onlyNull(VarcharType.VARCHAR));
-        TupleDomain<HiveColumnHandle> tupleDomain = TupleDomain.fromColumnDomains(Optional.of(ImmutableList.of(columnDomain)));
         partitions.add(new HivePartition(
                 new SchemaTableName("test", "test"),
                 "null",
-                ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.asNull(VarcharType.VARCHAR)), ImmutableList.of()));
+                ImmutableMap.of(TEST_COLUMN_HANDLE, NullableValue.asNull(VarcharType.VARCHAR))));
 
         createPredicate(ImmutableList.of(TEST_COLUMN_HANDLE), partitions.build());
+    }
+
+    @Test
+    public void testPreferredOrderingColumnsSerDe()
+    {
+        verifyPreferredOrderingColumnsRoundTrip(ImmutableList.of());
+        verifyPreferredOrderingColumnsRoundTrip(ImmutableList.of(new SortingColumn("a", ASCENDING)));
+        verifyPreferredOrderingColumnsRoundTrip(ImmutableList.of(new SortingColumn("a", DESCENDING)));
+        verifyPreferredOrderingColumnsRoundTrip(ImmutableList.of(new SortingColumn("a", ASCENDING), new SortingColumn("b", DESCENDING)));
+        verifyPreferredOrderingColumnsRoundTrip(ImmutableList.of(new SortingColumn("a", ASCENDING), new SortingColumn("b", ASCENDING)));
+        verifyPreferredOrderingColumnsRoundTrip(ImmutableList.of(new SortingColumn("a", DESCENDING), new SortingColumn("b", ASCENDING)));
+        verifyPreferredOrderingColumnsRoundTrip(ImmutableList.of(new SortingColumn("a", DESCENDING), new SortingColumn("b", DESCENDING)));
+
+        verifyPreferredOrderingColumnsRoundTrip(ImmutableList.of(new SortingColumn("ASC", ASCENDING)));
+        verifyPreferredOrderingColumnsRoundTrip(ImmutableList.of(new SortingColumn("DESC", DESCENDING)));
+    }
+
+    private void verifyPreferredOrderingColumnsRoundTrip(List<SortingColumn> sortingColumns)
+    {
+        List<SortingColumn> decoded = decodePreferredOrderingColumnsFromStorage(
+                Storage.builder()
+                        .setStorageFormat(VIEW_STORAGE_FORMAT)
+                        .setLocation("test")
+                        .setParameters(ImmutableMap.of(PREFERRED_ORDERING_COLUMNS, encodePreferredOrderingColumns(sortingColumns)))
+                        .build());
+        assertEquals(sortingColumns, decoded);
     }
 }

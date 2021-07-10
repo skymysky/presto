@@ -14,10 +14,14 @@
 package com.facebook.presto.jdbc;
 
 import com.facebook.presto.client.ClientException;
+import com.facebook.presto.client.OkHttpUtil;
 import com.google.common.base.Splitter;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
 import com.google.common.net.HostAndPort;
 import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
 
 import java.io.File;
 import java.net.URI;
@@ -30,22 +34,35 @@ import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Properties;
 
+import static com.facebook.presto.client.GCSOAuthInterceptor.GCS_CREDENTIALS_PATH_KEY;
+import static com.facebook.presto.client.GCSOAuthInterceptor.GCS_OAUTH_SCOPES_KEY;
 import static com.facebook.presto.client.KerberosUtil.defaultCredentialCachePath;
 import static com.facebook.presto.client.OkHttpUtil.basicAuth;
+import static com.facebook.presto.client.OkHttpUtil.setupCookieJar;
 import static com.facebook.presto.client.OkHttpUtil.setupHttpProxy;
 import static com.facebook.presto.client.OkHttpUtil.setupKerberos;
 import static com.facebook.presto.client.OkHttpUtil.setupSocksProxy;
 import static com.facebook.presto.client.OkHttpUtil.setupSsl;
+import static com.facebook.presto.client.OkHttpUtil.tokenAuth;
+import static com.facebook.presto.jdbc.ConnectionProperties.ACCESS_TOKEN;
+import static com.facebook.presto.jdbc.ConnectionProperties.APPLICATION_NAME_PREFIX;
+import static com.facebook.presto.jdbc.ConnectionProperties.DISABLE_COMPRESSION;
+import static com.facebook.presto.jdbc.ConnectionProperties.EXTRA_CREDENTIALS;
+import static com.facebook.presto.jdbc.ConnectionProperties.HTTP_PROTOCOLS;
 import static com.facebook.presto.jdbc.ConnectionProperties.HTTP_PROXY;
 import static com.facebook.presto.jdbc.ConnectionProperties.KERBEROS_CONFIG_PATH;
 import static com.facebook.presto.jdbc.ConnectionProperties.KERBEROS_CREDENTIAL_CACHE_PATH;
 import static com.facebook.presto.jdbc.ConnectionProperties.KERBEROS_KEYTAB_PATH;
 import static com.facebook.presto.jdbc.ConnectionProperties.KERBEROS_PRINCIPAL;
-import static com.facebook.presto.jdbc.ConnectionProperties.KERBEROS_REMOTE_SERICE_NAME;
+import static com.facebook.presto.jdbc.ConnectionProperties.KERBEROS_REMOTE_SERVICE_NAME;
 import static com.facebook.presto.jdbc.ConnectionProperties.KERBEROS_USE_CANONICAL_HOSTNAME;
 import static com.facebook.presto.jdbc.ConnectionProperties.PASSWORD;
+import static com.facebook.presto.jdbc.ConnectionProperties.QUERY_INTERCEPTORS;
+import static com.facebook.presto.jdbc.ConnectionProperties.SESSION_PROPERTIES;
 import static com.facebook.presto.jdbc.ConnectionProperties.SOCKS_PROXY;
 import static com.facebook.presto.jdbc.ConnectionProperties.SSL;
+import static com.facebook.presto.jdbc.ConnectionProperties.SSL_KEY_STORE_PASSWORD;
+import static com.facebook.presto.jdbc.ConnectionProperties.SSL_KEY_STORE_PATH;
 import static com.facebook.presto.jdbc.ConnectionProperties.SSL_TRUST_STORE_PASSWORD;
 import static com.facebook.presto.jdbc.ConnectionProperties.SSL_TRUST_STORE_PATH;
 import static com.facebook.presto.jdbc.ConnectionProperties.USER;
@@ -88,7 +105,8 @@ final class PrestoDriverUri
 
         validateConnectionProperties(properties);
 
-        useSecureConnection = SSL.getRequiredValue(properties);
+        // enable SSL by default for standard port
+        useSecureConnection = SSL.getValue(properties).orElse(uri.getPort() == 443);
 
         initCatalogAndSchema();
     }
@@ -119,17 +137,57 @@ final class PrestoDriverUri
         return USER.getRequiredValue(properties);
     }
 
+    public Optional<String> getApplicationNamePrefix()
+            throws SQLException
+    {
+        return APPLICATION_NAME_PREFIX.getValue(properties);
+    }
+
     public Properties getProperties()
     {
         return properties;
+    }
+
+    public Map<String, String> getExtraCredentials()
+            throws SQLException
+    {
+        return EXTRA_CREDENTIALS.getValue(properties).orElse(ImmutableMap.of());
+    }
+
+    public Map<String, String> getSessionProperties()
+            throws SQLException
+    {
+        return SESSION_PROPERTIES.getValue(properties).orElse(ImmutableMap.of());
+    }
+
+    public List<QueryInterceptor> getQueryInterceptors()
+            throws SQLException
+    {
+        return QUERY_INTERCEPTORS.getValue(properties).orElse(ImmutableList.of());
+    }
+
+    public boolean isCompressionDisabled()
+            throws SQLException
+    {
+        return DISABLE_COMPRESSION.getValue(properties).orElse(false);
+    }
+
+    public Optional<List<Protocol>> getProtocols()
+            throws SQLException
+    {
+        return HTTP_PROTOCOLS.getValue(properties);
     }
 
     public void setupClient(OkHttpClient.Builder builder)
             throws SQLException
     {
         try {
+            setupCookieJar(builder);
             setupSocksProxy(builder, SOCKS_PROXY.getValue(properties));
             setupHttpProxy(builder, HTTP_PROXY.getValue(properties));
+
+            // add user specified protocols to okhttp3 client if specified
+            getProtocols().ifPresent(builder::protocols);
 
             // TODO: fix Tempto to allow empty passwords
             String password = PASSWORD.getValue(properties).orElse("");
@@ -141,24 +199,38 @@ final class PrestoDriverUri
             }
 
             if (useSecureConnection) {
-                Optional<String> trustStorePath = SSL_TRUST_STORE_PATH.getValue(properties);
-                Optional<String> trustStorePassword = SSL_TRUST_STORE_PASSWORD.getValue(properties);
-                setupSsl(builder, Optional.empty(), Optional.empty(), trustStorePath, trustStorePassword);
+                setupSsl(
+                        builder,
+                        SSL_KEY_STORE_PATH.getValue(properties),
+                        SSL_KEY_STORE_PASSWORD.getValue(properties),
+                        SSL_TRUST_STORE_PATH.getValue(properties),
+                        SSL_TRUST_STORE_PASSWORD.getValue(properties));
             }
 
-            if (KERBEROS_REMOTE_SERICE_NAME.getValue(properties).isPresent()) {
+            if (KERBEROS_REMOTE_SERVICE_NAME.getValue(properties).isPresent()) {
                 if (!useSecureConnection) {
                     throw new SQLException("Authentication using Kerberos requires SSL to be enabled");
                 }
                 setupKerberos(
                         builder,
-                        KERBEROS_REMOTE_SERICE_NAME.getRequiredValue(properties),
+                        KERBEROS_REMOTE_SERVICE_NAME.getRequiredValue(properties),
                         KERBEROS_USE_CANONICAL_HOSTNAME.getRequiredValue(properties),
                         KERBEROS_PRINCIPAL.getValue(properties),
                         KERBEROS_CONFIG_PATH.getValue(properties),
                         KERBEROS_KEYTAB_PATH.getValue(properties),
                         Optional.ofNullable(KERBEROS_CREDENTIAL_CACHE_PATH.getValue(properties)
                                 .orElseGet(() -> defaultCredentialCachePath().map(File::new).orElse(null))));
+            }
+
+            Map<String, String> extraCredentials = EXTRA_CREDENTIALS.getValue(properties).orElse(ImmutableMap.of());
+            Optional.ofNullable(extraCredentials.get(GCS_CREDENTIALS_PATH_KEY))
+                    .ifPresent(credentialPath -> OkHttpUtil.setupGCSOauth(builder, credentialPath, Optional.ofNullable(extraCredentials.get(GCS_OAUTH_SCOPES_KEY))));
+
+            if (ACCESS_TOKEN.getValue(properties).isPresent()) {
+                if (!useSecureConnection) {
+                    throw new SQLException("Authentication using an access token requires SSL to be enabled");
+                }
+                builder.addInterceptor(tokenAuth(ACCESS_TOKEN.getValue(properties).get()));
             }
         }
         catch (ClientException e) {

@@ -14,10 +14,11 @@
 package com.facebook.presto.cassandra;
 
 import com.facebook.presto.testing.MaterializedResult;
+import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestDistributedQueries;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
 
@@ -27,10 +28,11 @@ import static com.facebook.presto.testing.assertions.Assert.assertEquals;
 public class TestCassandraDistributed
         extends AbstractTestDistributedQueries
 {
-    public TestCassandraDistributed()
+    @Override
+    protected QueryRunner createQueryRunner()
             throws Exception
     {
-        super(CassandraQueryRunner::createCassandraQueryRunner);
+        return CassandraQueryRunner.createCassandraQueryRunner();
     }
 
     @Override
@@ -40,19 +42,12 @@ public class TestCassandraDistributed
     }
 
     @Override
+    protected boolean supportsNotNullColumns()
+    {
+        return false;
+    }
+
     public void testJoinWithLessThanOnDatesInJoinClause()
-    {
-        // Cassandra does not support DATE
-    }
-
-    @Override
-    public void testGroupingSetMixedExpressionAndColumn()
-    {
-        // Cassandra does not support DATE
-    }
-
-    @Override
-    public void testGroupingSetMixedExpressionAndOrdinal()
     {
         // Cassandra does not support DATE
     }
@@ -84,17 +79,11 @@ public class TestCassandraDistributed
     @Override
     public void testInsert()
     {
-        // Cassandra connector currently does not support insert
+        // TODO Cassandra connector supports inserts, but the test would fail
     }
 
     @Override
     public void testCreateTable()
-    {
-        // Cassandra connector currently does not support create table
-    }
-
-    @Override
-    public void testCreateTableAsSelect()
     {
         // Cassandra connector currently does not support create table
     }
@@ -140,6 +129,6 @@ public class TestCassandraDistributed
     @Override
     public void testWrittenStats()
     {
-        // Cassandra connector currently does not support create table nor insert
+        // TODO Cassandra connector supports CTAS and inserts, but the test would fail
     }
 }

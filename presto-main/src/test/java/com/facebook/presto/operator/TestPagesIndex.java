@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.Type;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
 
@@ -22,8 +22,8 @@ import java.util.Arrays;
 import java.util.List;
 
 import static com.facebook.presto.SequencePageBuilder.createSequencePage;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static java.lang.String.format;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
@@ -35,7 +35,7 @@ public class TestPagesIndex
     {
         List<Type> types = ImmutableList.of(BIGINT, VARCHAR);
 
-        PagesIndex pagesIndex = newPagesIndex(types, 30);
+        PagesIndex pagesIndex = newPagesIndex(types, 30, false);
         long initialEstimatedSize = pagesIndex.getEstimatedSize().toBytes();
         assertTrue(initialEstimatedSize > 0, format("Initial estimated size must be positive, got %s", initialEstimatedSize));
 
@@ -59,9 +59,32 @@ public class TestPagesIndex
                 estimatedSizeAfterCompact));
     }
 
-    private static PagesIndex newPagesIndex(List<Type> types, int expectedPositions)
+    @Test
+    public void testEagerCompact()
     {
-        return new PagesIndex.TestingFactory().newPagesIndex(types, expectedPositions);
+        List<Type> types = ImmutableList.of(VARCHAR);
+
+        PagesIndex lazyCompactPagesIndex = newPagesIndex(types, 50, false);
+        PagesIndex eagerCompactPagesIndex = newPagesIndex(types, 50, true);
+
+        for (int i = 0; i < 5; i++) {
+            lazyCompactPagesIndex.addPage(somePage(types));
+            eagerCompactPagesIndex.addPage(somePage(types));
+
+            // We can expect eagerCompactPagesIndex retained less data than lazyCompactPagesIndex because
+            // the pages used in the test (VARCHAR sequence pages) are compactable.
+            assertTrue(
+                    eagerCompactPagesIndex.getEstimatedSize().toBytes() < lazyCompactPagesIndex.getEstimatedSize().toBytes(),
+                    "Expect eagerCompactPagesIndex retained less data than lazyCompactPagesIndex after adding the page, because the pages used in the test are compactable.");
+        }
+
+        lazyCompactPagesIndex.compact();
+        assertEquals(lazyCompactPagesIndex.getEstimatedSize(), eagerCompactPagesIndex.getEstimatedSize());
+    }
+
+    private static PagesIndex newPagesIndex(List<Type> types, int expectedPositions, boolean eagerCompact)
+    {
+        return new PagesIndex.TestingFactory(eagerCompact).newPagesIndex(types, expectedPositions);
     }
 
     private static Page somePage(List<Type> types)

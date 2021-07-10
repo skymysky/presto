@@ -19,16 +19,11 @@ import com.facebook.presto.sql.tree.ExpressionRewriter;
 import com.facebook.presto.sql.tree.ExpressionTreeRewriter;
 import com.facebook.presto.sql.tree.Extract;
 import com.facebook.presto.sql.tree.FunctionCall;
-import com.facebook.presto.sql.tree.IfExpression;
 import com.facebook.presto.sql.tree.IsNotNullPredicate;
 import com.facebook.presto.sql.tree.IsNullPredicate;
 import com.facebook.presto.sql.tree.NotExpression;
 import com.facebook.presto.sql.tree.QualifiedName;
-import com.facebook.presto.sql.tree.SearchedCaseExpression;
-import com.facebook.presto.sql.tree.WhenClause;
 import com.google.common.collect.ImmutableList;
-
-import java.util.Optional;
 
 public class CanonicalizeExpressionRewriter
 {
@@ -50,24 +45,13 @@ public class CanonicalizeExpressionRewriter
         }
 
         @Override
-        public Expression rewriteIfExpression(IfExpression node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
-        {
-            Expression condition = treeRewriter.rewrite(node.getCondition(), context);
-            Expression trueValue = treeRewriter.rewrite(node.getTrueValue(), context);
-
-            Optional<Expression> falseValue = node.getFalseValue().map((value) -> treeRewriter.rewrite(value, context));
-
-            return new SearchedCaseExpression(ImmutableList.of(new WhenClause(condition, trueValue)), falseValue);
-        }
-
-        @Override
         public Expression rewriteCurrentTime(CurrentTime node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
         {
             if (node.getPrecision() != null) {
                 throw new UnsupportedOperationException("not yet implemented: non-default precision");
             }
 
-            switch (node.getType()) {
+            switch (node.getFunction()) {
                 case DATE:
                     return new FunctionCall(QualifiedName.of("current_date"), ImmutableList.of());
                 case TIME:
@@ -79,7 +63,7 @@ public class CanonicalizeExpressionRewriter
                 case LOCALTIMESTAMP:
                     return new FunctionCall(QualifiedName.of("localtimestamp"), ImmutableList.of());
                 default:
-                    throw new UnsupportedOperationException("not yet implemented: " + node.getType());
+                    throw new UnsupportedOperationException("not yet implemented: " + node.getFunction());
             }
         }
 

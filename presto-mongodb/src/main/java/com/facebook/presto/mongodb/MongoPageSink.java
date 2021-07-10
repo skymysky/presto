@@ -13,29 +13,29 @@
  */
 package com.facebook.presto.mongodb;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.BooleanType;
+import com.facebook.presto.common.type.DateType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.DoubleType;
+import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.NamedTypeSignature;
+import com.facebook.presto.common.type.SmallintType;
+import com.facebook.presto.common.type.TimeType;
+import com.facebook.presto.common.type.TimestampType;
+import com.facebook.presto.common.type.TimestampWithTimeZoneType;
+import com.facebook.presto.common.type.TinyintType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.VarbinaryType;
 import com.facebook.presto.spi.ConnectorPageSink;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.StandardErrorCode;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.BooleanType;
-import com.facebook.presto.spi.type.DateType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.Decimals;
-import com.facebook.presto.spi.type.DoubleType;
-import com.facebook.presto.spi.type.IntegerType;
-import com.facebook.presto.spi.type.NamedTypeSignature;
-import com.facebook.presto.spi.type.SmallintType;
-import com.facebook.presto.spi.type.TimeType;
-import com.facebook.presto.spi.type.TimestampType;
-import com.facebook.presto.spi.type.TimestampWithTimeZoneType;
-import com.facebook.presto.spi.type.TinyintType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
-import com.facebook.presto.spi.type.VarbinaryType;
 import com.google.common.collect.ImmutableList;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.InsertManyOptions;
@@ -52,16 +52,17 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static com.facebook.presto.common.type.DateTimeEncoding.unpackMillisUtc;
+import static com.facebook.presto.common.type.Varchars.isVarcharType;
 import static com.facebook.presto.mongodb.ObjectIdType.OBJECT_ID;
 import static com.facebook.presto.mongodb.TypeUtils.isArrayType;
 import static com.facebook.presto.mongodb.TypeUtils.isMapType;
 import static com.facebook.presto.mongodb.TypeUtils.isRowType;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.type.DateTimeEncoding.unpackMillisUtc;
-import static com.facebook.presto.spi.type.Varchars.isVarcharType;
 import static java.util.Collections.unmodifiableList;
 import static java.util.Collections.unmodifiableMap;
 import static java.util.concurrent.CompletableFuture.completedFuture;
@@ -163,6 +164,7 @@ public class MongoPageSink
         }
         if (type instanceof DecimalType) {
             // TODO: decimal type might not support yet
+            // TODO: this code is likely wrong and should switch to Decimals.readBigDecimal()
             DecimalType decimalType = (DecimalType) type;
             BigInteger unscaledValue;
             if (decimalType.isShort()) {
@@ -176,7 +178,7 @@ public class MongoPageSink
         if (isArrayType(type)) {
             Type elementType = type.getTypeParameters().get(0);
 
-            Block arrayBlock = block.getObject(position, Block.class);
+            Block arrayBlock = block.getBlock(position);
 
             List<Object> list = new ArrayList<>(arrayBlock.getPositionCount());
             for (int i = 0; i < arrayBlock.getPositionCount(); i++) {
@@ -190,7 +192,7 @@ public class MongoPageSink
             Type keyType = type.getTypeParameters().get(0);
             Type valueType = type.getTypeParameters().get(1);
 
-            Block mapBlock = block.getObject(position, Block.class);
+            Block mapBlock = block.getBlock(position);
 
             // map type is converted into list of fixed keys document
             List<Object> values = new ArrayList<>(mapBlock.getPositionCount() / 2);
@@ -204,7 +206,7 @@ public class MongoPageSink
             return unmodifiableList(values);
         }
         if (isRowType(type)) {
-            Block rowBlock = block.getObject(position, Block.class);
+            Block rowBlock = block.getBlock(position);
 
             List<Type> fieldTypes = type.getTypeParameters();
             if (fieldTypes.size() != rowBlock.getPositionCount()) {
@@ -223,7 +225,7 @@ public class MongoPageSink
             Map<String, Object> rowValue = new HashMap<>();
             for (int i = 0; i < rowBlock.getPositionCount(); i++) {
                 rowValue.put(
-                        type.getTypeSignature().getParameters().get(i).getNamedTypeSignature().getName(),
+                        type.getTypeSignature().getParameters().get(i).getNamedTypeSignature().getName().orElse("field" + i),
                         getObjectValue(fieldTypes.get(i), rowBlock, i));
             }
             return unmodifiableMap(rowValue);
@@ -238,6 +240,8 @@ public class MongoPageSink
                 .stream()
                 .map(TypeSignatureParameter::getNamedTypeSignature)
                 .map(NamedTypeSignature::getName)
+                .filter(Optional::isPresent)
+                .map(Optional::get)
                 .allMatch(name -> name.startsWith(implicitPrefix));
     }
 

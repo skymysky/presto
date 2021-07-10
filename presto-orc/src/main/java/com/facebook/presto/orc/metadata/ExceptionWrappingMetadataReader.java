@@ -13,14 +13,19 @@
  */
 package com.facebook.presto.orc.metadata;
 
+import com.facebook.presto.orc.DwrfEncryptionProvider;
+import com.facebook.presto.orc.DwrfKeyProvider;
 import com.facebook.presto.orc.OrcCorruptionException;
+import com.facebook.presto.orc.OrcDataSource;
 import com.facebook.presto.orc.OrcDataSourceId;
+import com.facebook.presto.orc.OrcDecompressor;
 import com.facebook.presto.orc.metadata.PostScript.HiveWriterVersion;
 import com.facebook.presto.orc.metadata.statistics.HiveBloomFilter;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
+import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -46,7 +51,7 @@ public class ExceptionWrappingMetadataReader
             return delegate.readPostScript(data, offset, length);
         }
         catch (IOException | RuntimeException e) {
-            throw new OrcCorruptionException(e, orcDataSourceId, "Invalid postscript");
+            throw propagate(e, "Invalid postscript");
         }
     }
 
@@ -58,31 +63,36 @@ public class ExceptionWrappingMetadataReader
             return delegate.readMetadata(hiveWriterVersion, inputStream);
         }
         catch (IOException | RuntimeException e) {
-            throw new OrcCorruptionException(e, orcDataSourceId, "Invalid file metadata");
+            throw propagate(e, "Invalid file metadata");
         }
     }
 
     @Override
-    public Footer readFooter(HiveWriterVersion hiveWriterVersion, InputStream inputStream)
+    public Footer readFooter(HiveWriterVersion hiveWriterVersion,
+            InputStream inputStream,
+            DwrfEncryptionProvider dwrfEncryptionProvider,
+            DwrfKeyProvider dwrfKeyProvider,
+            OrcDataSource orcDataSource,
+            Optional<OrcDecompressor> decompressor)
             throws OrcCorruptionException
     {
         try {
-            return delegate.readFooter(hiveWriterVersion, inputStream);
+            return delegate.readFooter(hiveWriterVersion, inputStream, dwrfEncryptionProvider, dwrfKeyProvider, orcDataSource, decompressor);
         }
         catch (IOException | RuntimeException e) {
-            throw new OrcCorruptionException(e, orcDataSourceId, "Invalid file footer");
+            throw propagate(e, "Invalid file footer");
         }
     }
 
     @Override
-    public StripeFooter readStripeFooter(List<OrcType> types, InputStream inputStream)
+    public StripeFooter readStripeFooter(OrcDataSourceId orcDataSourceId, List<OrcType> types, InputStream inputStream)
             throws IOException
     {
         try {
-            return delegate.readStripeFooter(types, inputStream);
+            return delegate.readStripeFooter(orcDataSourceId, types, inputStream);
         }
         catch (IOException e) {
-            throw new OrcCorruptionException(e, orcDataSourceId, "Invalid stripe footer");
+            throw propagate(e, "Invalid stripe footer");
         }
     }
 
@@ -94,7 +104,7 @@ public class ExceptionWrappingMetadataReader
             return delegate.readRowIndexes(hiveWriterVersion, inputStream);
         }
         catch (IOException | RuntimeException e) {
-            throw new OrcCorruptionException(e, orcDataSourceId, "Invalid stripe row index");
+            throw propagate(e, "Invalid stripe row index");
         }
     }
 
@@ -106,7 +116,15 @@ public class ExceptionWrappingMetadataReader
             return delegate.readBloomFilterIndexes(inputStream);
         }
         catch (IOException | RuntimeException e) {
-            throw new OrcCorruptionException(e, orcDataSourceId, "Invalid bloom filter");
+            throw propagate(e, "Invalid bloom filter");
         }
+    }
+
+    private OrcCorruptionException propagate(Throwable throwable, String message)
+    {
+        if (throwable.getClass().getSimpleName().equals("PrestoException")) {
+            throw (RuntimeException) throwable;
+        }
+        return new OrcCorruptionException(throwable, orcDataSourceId, message);
     }
 }

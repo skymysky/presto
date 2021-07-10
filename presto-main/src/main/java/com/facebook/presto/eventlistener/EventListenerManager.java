@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.eventlistener;
 
+import com.facebook.airlift.log.Logger;
+import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
 import com.facebook.presto.spi.eventlistener.EventListener;
 import com.facebook.presto.spi.eventlistener.EventListenerFactory;
 import com.facebook.presto.spi.eventlistener.QueryCompletedEvent;
@@ -20,21 +22,18 @@ import com.facebook.presto.spi.eventlistener.QueryCreatedEvent;
 import com.facebook.presto.spi.eventlistener.SplitCompletedEvent;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.log.Logger;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.facebook.presto.util.PropertiesUtil.loadProperties;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
-import static com.google.common.collect.Maps.fromProperties;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -60,14 +59,22 @@ public class EventListenerManager
             throws Exception
     {
         if (EVENT_LISTENER_CONFIGURATION.exists()) {
-            Map<String, String> properties = new HashMap<>(loadProperties(EVENT_LISTENER_CONFIGURATION));
-
-            String eventListenerName = properties.remove(EVENT_LISTENER_PROPERTY_NAME);
-            checkArgument(!isNullOrEmpty(eventListenerName),
-                    "Access control configuration %s does not contain %s", EVENT_LISTENER_CONFIGURATION.getAbsoluteFile(), EVENT_LISTENER_PROPERTY_NAME);
-
-            setConfiguredEventListener(eventListenerName, properties);
+            Map<String, String> properties = loadProperties(EVENT_LISTENER_CONFIGURATION);
+            checkArgument(
+                    !isNullOrEmpty(properties.get(EVENT_LISTENER_PROPERTY_NAME)),
+                    "Access control configuration %s does not contain %s",
+                    EVENT_LISTENER_CONFIGURATION.getAbsoluteFile(),
+                    EVENT_LISTENER_PROPERTY_NAME);
+            loadConfiguredEventListener(properties);
         }
+    }
+
+    public void loadConfiguredEventListener(Map<String, String> properties)
+    {
+        properties = new HashMap<>(properties);
+        String eventListenerName = properties.remove(EVENT_LISTENER_PROPERTY_NAME);
+        checkArgument(!isNullOrEmpty(eventListenerName), "event-listener.name property must be present");
+        setConfiguredEventListener(eventListenerName, properties);
     }
 
     @VisibleForTesting
@@ -81,8 +88,10 @@ public class EventListenerManager
         EventListenerFactory eventListenerFactory = eventListenerFactories.get(name);
         checkState(eventListenerFactory != null, "Event listener %s is not registered", name);
 
-        EventListener eventListener = eventListenerFactory.create(ImmutableMap.copyOf(properties));
-        this.configuredEventListener.set(Optional.of(eventListener));
+        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(eventListenerFactory.getClass().getClassLoader())) {
+            EventListener eventListener = eventListenerFactory.create(ImmutableMap.copyOf(properties));
+            this.configuredEventListener.set(Optional.of(eventListener));
+        }
 
         log.info("-- Loaded event listener %s --", name);
     }
@@ -106,17 +115,5 @@ public class EventListenerManager
         if (configuredEventListener.get().isPresent()) {
             configuredEventListener.get().get().splitCompleted(splitCompletedEvent);
         }
-    }
-
-    private static Map<String, String> loadProperties(File file)
-            throws Exception
-    {
-        requireNonNull(file, "file is null");
-
-        Properties properties = new Properties();
-        try (FileInputStream in = new FileInputStream(file)) {
-            properties.load(in);
-        }
-        return fromProperties(properties);
     }
 }

@@ -13,19 +13,19 @@
  */
 package com.facebook.presto.operator.scalar;
 
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlType;
 import com.facebook.presto.spi.function.TypeParameter;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
 
+@ScalarFunction("good1")
 public final class ConstructorWithValidTypeParameters
 {
     @TypeParameter("K")
     @TypeParameter("V")
     public ConstructorWithValidTypeParameters(@TypeParameter("MAP(K,V)") Type type) {}
 
-    @ScalarFunction
     @TypeParameter("K")
     @TypeParameter("V")
     @SqlType(StandardTypes.BIGINT)

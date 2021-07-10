@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.connector.system;
 
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorPageSource;
@@ -23,12 +26,10 @@ import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.RecordPageSource;
 import com.facebook.presto.spi.RecordSet;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.SplitContext;
 import com.facebook.presto.spi.SystemTable;
 import com.facebook.presto.spi.connector.ConnectorPageSourceProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.split.MappedPageSource;
 import com.facebook.presto.split.MappedRecordSet;
 import com.google.common.collect.ImmutableList;
@@ -37,36 +38,40 @@ import com.google.common.collect.ImmutableMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
+import static com.facebook.presto.common.predicate.TupleDomain.withColumnDomains;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
-import static com.facebook.presto.spi.predicate.TupleDomain.withColumnDomains;
-import static com.google.common.base.Preconditions.checkArgument;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_FOUND;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.common.collect.Maps.uniqueIndex;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 public class SystemPageSourceProvider
         implements ConnectorPageSourceProvider
 {
-    private final Map<SchemaTableName, SystemTable> tables;
+    private final SystemTablesProvider tables;
 
-    public SystemPageSourceProvider(Set<SystemTable> tables)
+    public SystemPageSourceProvider(SystemTablesProvider tables)
     {
-        this.tables = uniqueIndex(tables, table -> table.getTableMetadata().getTable());
+        this.tables = requireNonNull(tables, "tables is null");
     }
 
     @Override
-    public ConnectorPageSource createPageSource(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorSplit split, List<ColumnHandle> columns)
+    public ConnectorPageSource createPageSource(
+            ConnectorTransactionHandle transactionHandle,
+            ConnectorSession session,
+            ConnectorSplit split,
+            List<ColumnHandle> columns,
+            SplitContext splitContext)
     {
         requireNonNull(columns, "columns is null");
         SystemTransactionHandle systemTransaction = (SystemTransactionHandle) transactionHandle;
         SystemSplit systemSplit = (SystemSplit) split;
         SchemaTableName tableName = systemSplit.getTableHandle().getSchemaTableName();
-        SystemTable systemTable = tables.get(tableName);
+        SystemTable systemTable = tables.getSystemTable(session, tableName)
+                // table might disappear in the meantime
+                .orElseThrow(() -> new PrestoException(NOT_FOUND, format("Table %s not found", tableName)));
 
-        checkArgument(systemTable != null, "Table %s does not exist", tableName);
         List<ColumnMetadata> tableColumns = systemTable.getTableMetadata().getColumns();
 
         Map<String, Integer> columnsByName = new HashMap<>();

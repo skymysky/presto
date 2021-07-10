@@ -13,28 +13,25 @@
  */
 package com.facebook.presto.metadata;
 
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.connector.ConnectorManager;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Files;
-import io.airlift.log.Logger;
 
 import javax.inject.Inject;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static com.facebook.presto.util.PropertiesUtil.loadProperties;
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.collect.Maps.fromProperties;
-import static java.util.Objects.requireNonNull;
 
 public class StaticCatalogStore
 {
@@ -68,6 +65,12 @@ public class StaticCatalogStore
     public void loadCatalogs()
             throws Exception
     {
+        loadCatalogs(ImmutableMap.of());
+    }
+
+    public void loadCatalogs(Map<String, Map<String, String>> additionalCatalogs)
+            throws Exception
+    {
         if (!catalogsLoading.compareAndSet(false, true)) {
             return;
         }
@@ -78,6 +81,8 @@ public class StaticCatalogStore
             }
         }
 
+        additionalCatalogs.forEach(this::loadCatalog);
+
         catalogsLoaded.set(true);
     }
 
@@ -85,18 +90,37 @@ public class StaticCatalogStore
             throws Exception
     {
         String catalogName = Files.getNameWithoutExtension(file.getName());
+
+        log.info("-- Loading catalog properties %s --", file);
+        Map<String, String> properties = loadProperties(file);
+        checkState(properties.containsKey("connector.name"), "Catalog configuration %s does not contain connector.name", file.getAbsoluteFile());
+
+        loadCatalog(catalogName, properties);
+    }
+
+    private void loadCatalog(String catalogName, Map<String, String> properties)
+    {
         if (disabledCatalogs.contains(catalogName)) {
             log.info("Skipping disabled catalog %s", catalogName);
             return;
         }
 
-        log.info("-- Loading catalog %s --", file);
-        Map<String, String> properties = new HashMap<>(loadProperties(file));
+        log.info("-- Loading catalog %s --", catalogName);
 
-        String connectorName = properties.remove("connector.name");
-        checkState(connectorName != null, "Catalog configuration %s does not contain connector.name", file.getAbsoluteFile());
+        String connectorName = null;
+        ImmutableMap.Builder<String, String> connectorProperties = ImmutableMap.builder();
+        for (Entry<String, String> entry : properties.entrySet()) {
+            if (entry.getKey().equals("connector.name")) {
+                connectorName = entry.getValue();
+            }
+            else {
+                connectorProperties.put(entry.getKey(), entry.getValue());
+            }
+        }
 
-        connectorManager.createConnection(catalogName, connectorName, ImmutableMap.copyOf(properties));
+        checkState(connectorName != null, "Configuration for catalog %s does not contain connector.name", catalogName);
+
+        connectorManager.createConnection(catalogName, connectorName, connectorProperties.build());
         log.info("-- Added catalog %s using connector %s --", catalogName, connectorName);
     }
 
@@ -109,17 +133,5 @@ public class StaticCatalogStore
             }
         }
         return ImmutableList.of();
-    }
-
-    private static Map<String, String> loadProperties(File file)
-            throws Exception
-    {
-        requireNonNull(file, "file is null");
-
-        Properties properties = new Properties();
-        try (FileInputStream in = new FileInputStream(file)) {
-            properties.load(in);
-        }
-        return fromProperties(properties);
     }
 }

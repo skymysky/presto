@@ -13,295 +13,198 @@
  */
 package com.facebook.presto.orc.writer;
 
-import com.facebook.presto.array.IntBigArray;
-import com.facebook.presto.orc.DictionaryCompressionOptimizer.DictionaryColumn;
-import com.facebook.presto.orc.checkpoint.BooleanStreamCheckpoint;
-import com.facebook.presto.orc.checkpoint.LongStreamCheckpoint;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.ColumnWriterOptions;
+import com.facebook.presto.orc.DwrfDataEncryptor;
+import com.facebook.presto.orc.OrcEncoding;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
-import com.facebook.presto.orc.metadata.CompressionKind;
+import com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind;
 import com.facebook.presto.orc.metadata.MetadataWriter;
-import com.facebook.presto.orc.metadata.RowGroupIndex;
 import com.facebook.presto.orc.metadata.Stream;
-import com.facebook.presto.orc.metadata.Stream.StreamKind;
 import com.facebook.presto.orc.metadata.statistics.ColumnStatistics;
 import com.facebook.presto.orc.metadata.statistics.StringStatisticsBuilder;
 import com.facebook.presto.orc.stream.ByteArrayOutputStream;
 import com.facebook.presto.orc.stream.LongOutputStream;
-import com.facebook.presto.orc.stream.LongOutputStreamV1;
-import com.facebook.presto.orc.stream.LongOutputStreamV2;
 import com.facebook.presto.orc.stream.PresentOutputStream;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.DictionaryBlock;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.orc.stream.StreamDataOutput;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
-import io.airlift.slice.SliceOutput;
-import it.unimi.dsi.fastutil.ints.AbstractIntComparator;
+import io.airlift.units.DataSize;
 import it.unimi.dsi.fastutil.ints.IntArrays;
 import org.openjdk.jol.info.ClassLayout;
 
-import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.orc.DictionaryCompressionOptimizer.estimateIndexBytesPerValue;
+import static com.facebook.presto.orc.OrcEncoding.DWRF;
 import static com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind.DICTIONARY;
 import static com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind.DICTIONARY_V2;
-import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
-import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
 import static com.facebook.presto.orc.stream.LongOutputStream.createLengthOutputStream;
-import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.Math.toIntExact;
-import static java.util.Objects.requireNonNull;
-import static java.util.stream.Collectors.toList;
 
 public class SliceDictionaryColumnWriter
-        implements ColumnWriter, DictionaryColumn
+        extends DictionaryColumnWriter
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(SliceDictionaryColumnWriter.class).instanceSize();
-    private final int column;
-    private final Type type;
-    private final CompressionKind compression;
-    private final int bufferSize;
-    private final boolean isDwrf;
+    private static final long INSTANCE_SIZE = ClassLayout.parseClass(SliceDictionaryColumnWriter.class).instanceSize();
+    private static final int DIRECT_CONVERSION_CHUNK_MAX_LOGICAL_BYTES = toIntExact(new DataSize(32, MEGABYTE).toBytes());
+    private static final int NULL_INDEX = -1;
 
-    private final LongOutputStream dataStream;
-    private final PresentOutputStream presentStream;
     private final ByteArrayOutputStream dictionaryDataStream;
     private final LongOutputStream dictionaryLengthStream;
+    private final SliceDictionaryBuilder dictionary = new SliceDictionaryBuilder(10_000);
+    private final int stringStatisticsLimitInBytes;
+    private final boolean sortDictionaryKeys;
 
-    private final DictionaryBuilder dictionary = new DictionaryBuilder(10000);
-
-    private final List<DictionaryRowGroup> rowGroups = new ArrayList<>();
-
-    private IntBigArray values;
-    private int valueCount;
-    private StringStatisticsBuilder statisticsBuilder = new StringStatisticsBuilder();
-
-    private long rawBytes;
-
-    private boolean closed;
-    private boolean inRowGroup;
+    private StringStatisticsBuilder statisticsBuilder;
     private ColumnEncoding columnEncoding;
-
-    private boolean directEncoded;
     private SliceDirectColumnWriter directColumnWriter;
 
-    public SliceDictionaryColumnWriter(int column, Type type, CompressionKind compression, int bufferSize, boolean isDwrf)
+    public SliceDictionaryColumnWriter(
+            int column,
+            Type type,
+            ColumnWriterOptions columnWriterOptions,
+            Optional<DwrfDataEncryptor> dwrfEncryptor,
+            OrcEncoding orcEncoding,
+            MetadataWriter metadataWriter)
     {
-        checkArgument(column >= 0, "column is negative");
-        this.column = column;
-        this.type = requireNonNull(type, "type is null");
-        this.compression = requireNonNull(compression, "compression is null");
-        this.bufferSize = bufferSize;
-        this.isDwrf = isDwrf;
-        LongOutputStream result;
-        if (isDwrf) {
-            result = new LongOutputStreamV1(compression, bufferSize, false, DATA);
-        }
-        else {
-            result = new LongOutputStreamV2(compression, bufferSize, false, DATA);
-        }
-        this.dataStream = result;
-        this.presentStream = new PresentOutputStream(compression, bufferSize);
-        this.dictionaryDataStream = new ByteArrayOutputStream(compression, bufferSize, StreamKind.DICTIONARY_DATA);
-        this.dictionaryLengthStream = createLengthOutputStream(compression, bufferSize, isDwrf);
-        values = new IntBigArray();
-    }
-
-    @Override
-    public long getRawBytes()
-    {
-        checkState(!directEncoded);
-        return rawBytes;
+        super(column, type, columnWriterOptions, dwrfEncryptor, orcEncoding, metadataWriter);
+        this.dictionaryDataStream = new ByteArrayOutputStream(columnWriterOptions, dwrfEncryptor, Stream.StreamKind.DICTIONARY_DATA);
+        this.dictionaryLengthStream = createLengthOutputStream(columnWriterOptions, dwrfEncryptor, orcEncoding);
+        this.stringStatisticsLimitInBytes = toIntExact(columnWriterOptions.getStringStatisticsLimit().toBytes());
+        this.statisticsBuilder = newStringStatisticsBuilder();
+        this.sortDictionaryKeys = columnWriterOptions.isStringDictionarySortingEnabled();
+        checkState(sortDictionaryKeys || orcEncoding == DWRF, "Disabling sort is only supported in DWRF format");
     }
 
     @Override
     public int getDictionaryBytes()
     {
-        checkState(!directEncoded);
+        checkState(!isDirectEncoded());
         return toIntExact(dictionary.getSizeInBytes());
-    }
-
-    @Override
-    public int getValueCount()
-    {
-        return valueCount;
-    }
-
-    @Override
-    public int getNonNullValueCount()
-    {
-        return toIntExact(statisticsBuilder.getNonNullValueCount());
     }
 
     @Override
     public int getDictionaryEntries()
     {
+        checkState(!isDirectEncoded());
         return dictionary.getEntryCount();
     }
 
     @Override
-    public void convertToDirect()
+    protected boolean tryConvertRowGroupToDirect(int dictionaryIndexCount, int[] dictionaryIndexes, int maxDirectBytes)
     {
-        checkState(!closed);
-        checkState(!directEncoded);
-        if (directColumnWriter == null) {
-            directColumnWriter = new SliceDirectColumnWriter(column, type, compression, bufferSize, isDwrf, StringStatisticsBuilder::new);
+        for (int offset = 0; offset < dictionaryIndexCount; offset++) {
+            directColumnWriter.writePresentValue(dictionaryIndexes[offset] != NULL_INDEX);
+        }
+        long size = 0;
+        for (int offset = 0; offset < dictionaryIndexCount; offset++) {
+            int dictionaryIndex = dictionaryIndexes[offset];
+            if (dictionaryIndex != NULL_INDEX) {
+                int length = dictionary.getSliceLength(dictionaryIndex);
+                Slice rawSlice = dictionary.getRawSlice(dictionaryIndex);
+                int rawSliceOffset = dictionary.getRawSliceOffset(dictionaryIndex);
+                directColumnWriter.writeSlice(rawSlice, rawSliceOffset, length);
+                size += length;
+                if (size > DIRECT_CONVERSION_CHUNK_MAX_LOGICAL_BYTES) {
+                    if (directColumnWriter.getBufferedBytes() > maxDirectBytes) {
+                        return false;
+                    }
+                    size = 0;
+                }
+            }
         }
 
-        Block dictionaryValues = dictionary.getElementBlock();
-        for (DictionaryRowGroup rowGroup : rowGroups) {
-            directColumnWriter.beginRowGroup();
-            // todo we should be able to pass the stats down to avoid recalculating min and max
-            writeDictionaryRowGroup(dictionaryValues, rowGroup.getValueCount(), rowGroup.getDictionaryIndexes());
-            directColumnWriter.finishRowGroup();
-        }
-        if (inRowGroup) {
-            directColumnWriter.beginRowGroup();
-            writeDictionaryRowGroup(dictionaryValues, valueCount, values);
-        }
-        else {
-            checkState(valueCount == 0);
-        }
-
-        rowGroups.clear();
-        rawBytes = 0;
-        valueCount = 0;
-        statisticsBuilder = new StringStatisticsBuilder();
-
-        directEncoded = true;
-    }
-
-    private void writeDictionaryRowGroup(Block dictionary, int valueCount, IntBigArray dictionaryIndexes)
-    {
-        int[][] segments = dictionaryIndexes.getSegments();
-        for (int i = 0; valueCount > 0 && i < segments.length; i++) {
-            int[] segment = segments[i];
-            int positionCount = Math.min(valueCount, segment.length);
-            DictionaryBlock dictionaryBlock = new DictionaryBlock(positionCount, dictionary, segment);
-            directColumnWriter.writeBlock(dictionaryBlock);
-            valueCount -= positionCount;
-        }
-        checkState(valueCount == 0);
+        return directColumnWriter.getBufferedBytes() <= maxDirectBytes;
     }
 
     @Override
-    public Map<Integer, ColumnEncoding> getColumnEncodings()
+    protected ColumnEncoding getDictionaryColumnEncoding()
     {
-        checkState(closed);
-        if (directEncoded) {
-            return directColumnWriter.getColumnEncodings();
-        }
-        return ImmutableMap.of(column, columnEncoding);
+        checkState(columnEncoding != null);
+        return columnEncoding;
     }
 
     @Override
-    public void beginRowGroup()
+    protected BlockStatistics addBlockToDictionary(Block block, int rowGroupValueCount, int[] rowGroupIndexes)
     {
-        checkState(!inRowGroup);
-        inRowGroup = true;
-
-        if (directEncoded) {
-            directColumnWriter.beginRowGroup();
-        }
-    }
-
-    @Override
-    public void writeBlock(Block block)
-    {
-        checkState(!closed);
-        checkArgument(block.getPositionCount() > 0, "Block is empty");
-
-        if (directEncoded) {
-            directColumnWriter.writeBlock(block);
-            return;
-        }
-
-        // record values
-        values.ensureCapacity(valueCount + block.getPositionCount());
+        int nonNullValueCount = 0;
+        long rawBytes = 0;
         for (int position = 0; position < block.getPositionCount(); position++) {
-            int index = dictionary.putIfAbsent(block, position);
-            values.set(valueCount, index);
-            valueCount++;
-
+            int index;
             if (!block.isNull(position)) {
+                index = dictionary.putIfAbsent(block, position);
+
                 // todo min/max statistics only need to be updated if value was not already in the dictionary, but non-null count does
-                statisticsBuilder.addValue(type.getSlice(block, position));
+                Slice slice = type.getSlice(block, position);
+                statisticsBuilder.addValue(slice, 0, slice.length());
 
                 rawBytes += block.getSliceLength(position);
+                nonNullValueCount++;
             }
+            else {
+                index = NULL_INDEX;
+            }
+            rowGroupIndexes[rowGroupValueCount++] = index;
         }
+        return new BlockStatistics(nonNullValueCount, rawBytes);
     }
 
     @Override
-    public Map<Integer, ColumnStatistics> finishRowGroup()
+    protected void closeDictionary()
     {
-        checkState(!closed);
-        checkState(inRowGroup);
-        inRowGroup = false;
+        // free the dictionary memory
+        dictionary.clear();
 
-        if (directEncoded) {
-            return directColumnWriter.finishRowGroup();
-        }
+        dictionaryDataStream.close();
+        dictionaryLengthStream.close();
+    }
 
+    @Override
+    protected ColumnStatistics createColumnStatistics()
+    {
         ColumnStatistics statistics = statisticsBuilder.buildColumnStatistics();
-        rowGroups.add(new DictionaryRowGroup(values, valueCount, statistics));
-        valueCount = 0;
-        statisticsBuilder = new StringStatisticsBuilder();
-        values = new IntBigArray();
-        return ImmutableMap.of(column, statistics);
+        statisticsBuilder = newStringStatisticsBuilder();
+        return statistics;
+    }
+
+    private static int[] getSortedDictionary(SliceDictionaryBuilder dictionary)
+    {
+        int[] sortedPositions = new int[dictionary.getEntryCount()];
+        for (int i = 0; i < sortedPositions.length; i++) {
+            sortedPositions[i] = i;
+        }
+
+        IntArrays.quickSort(sortedPositions, 0, sortedPositions.length, dictionary::compareIndex);
+        return sortedPositions;
     }
 
     @Override
-    public void close()
+    protected Optional<int[]> writeDictionary()
     {
-        checkState(!closed);
-        checkState(!inRowGroup);
-        closed = true;
-        if (directEncoded) {
-            directColumnWriter.close();
+        ColumnEncodingKind encodingKind = orcEncoding == DWRF ? DICTIONARY : DICTIONARY_V2;
+        int dictionaryEntryCount = dictionary.getEntryCount();
+        columnEncoding = new ColumnEncoding(encodingKind, dictionaryEntryCount);
+
+        if (sortDictionaryKeys) {
+            return writeSortedDictionary();
         }
         else {
-            bufferOutputData();
-        }
-    }
-
-    @Override
-    public Map<Integer, ColumnStatistics> getColumnStripeStatistics()
-    {
-        checkState(closed);
-        if (directEncoded) {
-            return directColumnWriter.getColumnStripeStatistics();
-        }
-
-        return ImmutableMap.of(column, ColumnStatistics.mergeColumnStatistics(rowGroups.stream()
-                .map(DictionaryRowGroup::getColumnStatistics)
-                .collect(toList())));
-    }
-
-    private void bufferOutputData()
-    {
-        checkState(closed);
-        checkState(!directEncoded);
-
-        Block dictionaryElements = dictionary.getElementBlock();
-
-        // write dictionary in sorted order
-        int[] sortedDictionaryIndexes = getSortedDictionaryNullsLast(dictionaryElements);
-        for (int sortedDictionaryIndex : sortedDictionaryIndexes) {
-            if (!dictionaryElements.isNull(sortedDictionaryIndex)) {
-                int length = dictionaryElements.getSliceLength(sortedDictionaryIndex);
-                dictionaryLengthStream.writeLong(length);
-                Slice value = dictionaryElements.getSlice(sortedDictionaryIndex, 0, length);
-                dictionaryDataStream.writeSlice(value);
+            for (int i = 0; i < dictionaryEntryCount; i++) {
+                writeDictionaryEntry(i);
             }
+            return Optional.empty();
         }
-        columnEncoding = new ColumnEncoding(isDwrf ? DICTIONARY : DICTIONARY_V2, dictionaryElements.getPositionCount() - 1);
+    }
+
+    private Optional<int[]> writeSortedDictionary()
+    {
+        int[] sortedDictionaryIndexes = getSortedDictionary(dictionary);
+        for (int sortedDictionaryIndex : sortedDictionaryIndexes) {
+            writeDictionaryEntry(sortedDictionaryIndex);
+        }
 
         // build index from original dictionary index to new sorted position
         int[] originalDictionaryToSortedIndex = new int[sortedDictionaryIndexes.length];
@@ -309,155 +212,61 @@ public class SliceDictionaryColumnWriter
             int dictionaryIndex = sortedDictionaryIndexes[sortOrdinal];
             originalDictionaryToSortedIndex[dictionaryIndex] = sortOrdinal;
         }
+        return Optional.of(originalDictionaryToSortedIndex);
+    }
 
-        if (!rowGroups.isEmpty()) {
-            presentStream.recordCheckpoint();
-            dataStream.recordCheckpoint();
+    private void writeDictionaryEntry(int dictionaryIndex)
+    {
+        int length = dictionary.getSliceLength(dictionaryIndex);
+        dictionaryLengthStream.writeLong(length);
+        Slice rawSlice = dictionary.getRawSlice(dictionaryIndex);
+        int rawSliceOffset = dictionary.getRawSliceOffset(dictionaryIndex);
+        dictionaryDataStream.writeSlice(rawSlice, rawSliceOffset, length);
+    }
+
+    @Override
+    protected void writePresentAndDataStreams(
+            int rowGroupValueCount,
+            int[] rowGroupIndexes,
+            Optional<int[]> optionalSortedIndex,
+            PresentOutputStream presentStream,
+            LongOutputStream dataStream)
+    {
+        checkState(optionalSortedIndex.isPresent() == sortDictionaryKeys, "SortedIndex and sortDictionaryKeys(%s) are inconsistent", sortDictionaryKeys);
+        for (int position = 0; position < rowGroupValueCount; position++) {
+            presentStream.writeBoolean(rowGroupIndexes[position] != NULL_INDEX);
         }
-        for (DictionaryRowGroup rowGroup : rowGroups) {
-            IntBigArray dictionaryIndexes = rowGroup.getDictionaryIndexes();
-            for (int position = 0; position < rowGroup.getValueCount(); position++) {
-                presentStream.writeBoolean(dictionaryIndexes.get(position) != 0);
-            }
-            for (int position = 0; position < rowGroup.getValueCount(); position++) {
-                int originalDictionaryIndex = dictionaryIndexes.get(position);
-                // index zero in original dictionary is reserved for null
-                if (originalDictionaryIndex != 0) {
-                    int sortedIndex = originalDictionaryToSortedIndex[originalDictionaryIndex];
+
+        if (sortDictionaryKeys) {
+            int[] sortedIndexes = optionalSortedIndex.get();
+            for (int position = 0; position < rowGroupValueCount; position++) {
+                int originalDictionaryIndex = rowGroupIndexes[position];
+                if (originalDictionaryIndex != NULL_INDEX) {
+                    int sortedIndex = sortedIndexes[originalDictionaryIndex];
                     if (sortedIndex < 0) {
-                        throw new IllegalArgumentException();
+                        throw new IllegalArgumentException(String.format("Invalid index %s at position %s", sortedIndex, position));
                     }
                     dataStream.writeLong(sortedIndex);
                 }
             }
-            presentStream.recordCheckpoint();
-            dataStream.recordCheckpoint();
         }
-
-        // free the dictionary memory
-        dictionary.clear();
-        dictionaryDataStream.close();
-        dictionaryLengthStream.close();
-
-        dataStream.close();
-        presentStream.close();
-    }
-
-    private static int[] getSortedDictionaryNullsLast(Block elementBlock)
-    {
-        int[] sortedPositions = new int[elementBlock.getPositionCount()];
-        for (int i = 0; i < sortedPositions.length; i++) {
-            sortedPositions[i] = i;
-        }
-
-        IntArrays.quickSort(sortedPositions, 0, sortedPositions.length, new AbstractIntComparator() {
-            @Override
-            public int compare(int left, int right)
-            {
-                boolean nullLeft = elementBlock.isNull(left);
-                boolean nullRight = elementBlock.isNull(right);
-                if (nullLeft && nullRight) {
-                    return 0;
+        else {
+            for (int position = 0; position < rowGroupValueCount; position++) {
+                int dictionaryIndex = rowGroupIndexes[position];
+                if (dictionaryIndex != NULL_INDEX) {
+                    if (dictionaryIndex < 0) {
+                        throw new IllegalArgumentException(String.format("Invalid index %s at position %s", dictionaryIndex, position));
+                    }
+                    dataStream.writeLong(dictionaryIndex);
                 }
-                if (nullLeft) {
-                    return 1;
-                }
-                if (nullRight) {
-                    return -1;
-                }
-
-                return elementBlock.compareTo(
-                        left,
-                        0,
-                        elementBlock.getSliceLength(left),
-                        elementBlock,
-                        right,
-                        0,
-                        elementBlock.getSliceLength(right));
             }
-        });
-
-        return sortedPositions;
+        }
     }
 
     @Override
-    public List<Stream> writeIndexStreams(SliceOutput outputStream, MetadataWriter metadataWriter)
-            throws IOException
+    protected long getRetainedDictionaryBytes()
     {
-        checkState(closed);
-
-        if (directEncoded) {
-            return directColumnWriter.writeIndexStreams(outputStream, metadataWriter);
-        }
-
-        ImmutableList.Builder<RowGroupIndex> rowGroupIndexes = ImmutableList.builder();
-
-        List<LongStreamCheckpoint> dataCheckpoints = dataStream.getCheckpoints();
-        Optional<List<BooleanStreamCheckpoint>> presentCheckpoints = presentStream.getCheckpoints();
-        for (int i = 0; i < rowGroups.size(); i++) {
-            int groupId = i;
-            ColumnStatistics columnStatistics = rowGroups.get(groupId).getColumnStatistics();
-            LongStreamCheckpoint dataCheckpoint = dataCheckpoints.get(groupId);
-            Optional<BooleanStreamCheckpoint> presentCheckpoint = presentCheckpoints.map(checkpoints -> checkpoints.get(groupId));
-            List<Integer> positions = createSliceColumnPositionList(compression != NONE, dataCheckpoint, presentCheckpoint);
-            rowGroupIndexes.add(new RowGroupIndex(positions, columnStatistics));
-        }
-
-        int length = metadataWriter.writeRowIndexes(outputStream, rowGroupIndexes.build());
-        return ImmutableList.of(new Stream(column, StreamKind.ROW_INDEX, length, false));
-    }
-
-    private static List<Integer> createSliceColumnPositionList(
-            boolean compressed,
-            LongStreamCheckpoint dataCheckpoint,
-            Optional<BooleanStreamCheckpoint> presentCheckpoint)
-    {
-        ImmutableList.Builder<Integer> positionList = ImmutableList.builder();
-        presentCheckpoint.ifPresent(booleanStreamCheckpoint -> positionList.addAll(booleanStreamCheckpoint.toPositionList(compressed)));
-        positionList.addAll(dataCheckpoint.toPositionList(compressed));
-        return positionList.build();
-    }
-
-    @Override
-    public List<Stream> writeDataStreams(SliceOutput outputStream)
-            throws IOException
-    {
-        checkState(closed);
-
-        if (directEncoded) {
-            return directColumnWriter.writeDataStreams(outputStream);
-        }
-
-        // actually write data
-        ImmutableList.Builder<Stream> dataStreams = ImmutableList.builder();
-
-        presentStream.writeDataStreams(column, outputStream).ifPresent(dataStreams::add);
-        dataStream.writeDataStreams(column, outputStream).ifPresent(dataStreams::add);
-        dictionaryLengthStream.writeDataStreams(column, outputStream).ifPresent(dataStreams::add);
-        dictionaryDataStream.writeDataStreams(column, outputStream).ifPresent(dataStreams::add);
-        return dataStreams.build();
-    }
-
-    @Override
-    public long getBufferedBytes()
-    {
-        checkState(!closed);
-        if (directEncoded) {
-            return directColumnWriter.getBufferedBytes();
-        }
-        // for dictionary columns we report the data we expect to write to the output stream
-        int indexBytes = estimateIndexBytesPerValue(dictionary.getEntryCount()) * getNonNullValueCount();
-        return indexBytes + getDictionaryBytes();
-    }
-
-    @Override
-    public long getRetainedBytes()
-    {
-        // NOTE: we do not include stats because they should be small and it would be annoying to calculate the size
         return INSTANCE_SIZE +
-                values.sizeOf() +
-                dataStream.getRetainedBytes() +
-                presentStream.getRetainedBytes() +
                 dictionaryDataStream.getRetainedBytes() +
                 dictionaryLengthStream.getRetainedBytes() +
                 dictionary.getRetainedSizeInBytes() +
@@ -465,56 +274,39 @@ public class SliceDictionaryColumnWriter
     }
 
     @Override
-    public void reset()
+    protected void resetDictionary()
     {
-        checkState(closed);
-        closed = false;
-        dataStream.reset();
-        presentStream.reset();
-        dictionaryDataStream.reset();
-        dictionaryLengthStream.reset();
-        rowGroups.clear();
-        valueCount = 0;
-        statisticsBuilder = new StringStatisticsBuilder();
         columnEncoding = null;
         dictionary.clear();
-        rawBytes = 0;
-        if (directEncoded) {
-            directEncoded = false;
-            directColumnWriter.reset();
-        }
+        dictionaryDataStream.reset();
+        dictionaryLengthStream.reset();
+        statisticsBuilder = newStringStatisticsBuilder();
     }
 
-    private static class DictionaryRowGroup
+    private StringStatisticsBuilder newStringStatisticsBuilder()
     {
-        private final IntBigArray dictionaryIndexes;
-        private final int valueCount;
-        private final ColumnStatistics columnStatistics;
+        return new StringStatisticsBuilder(stringStatisticsLimitInBytes);
+    }
 
-        public DictionaryRowGroup(IntBigArray dictionaryIndexes, int valueCount, ColumnStatistics columnStatistics)
-        {
-            requireNonNull(dictionaryIndexes, "dictionaryIndexes is null");
-            checkArgument(valueCount >= 0, "valueCount is negative");
-            requireNonNull(columnStatistics, "columnStatistics is null");
-
-            this.dictionaryIndexes = dictionaryIndexes;
-            this.valueCount = valueCount;
-            this.columnStatistics = columnStatistics;
+    @Override
+    protected ColumnWriter createDirectColumnWriter()
+    {
+        if (directColumnWriter == null) {
+            directColumnWriter = new SliceDirectColumnWriter(column, type, columnWriterOptions, dwrfEncryptor, orcEncoding, this::newStringStatisticsBuilder, metadataWriter);
         }
+        return directColumnWriter;
+    }
 
-        public IntBigArray getDictionaryIndexes()
-        {
-            return dictionaryIndexes;
-        }
+    @Override
+    protected ColumnWriter getDirectColumnWriter()
+    {
+        checkState(directColumnWriter != null);
+        return directColumnWriter;
+    }
 
-        public int getValueCount()
-        {
-            return valueCount;
-        }
-
-        public ColumnStatistics getColumnStatistics()
-        {
-            return columnStatistics;
-        }
+    @Override
+    protected List<StreamDataOutput> getDictionaryStreams(int column)
+    {
+        return ImmutableList.of(dictionaryLengthStream.getStreamDataOutput(column), dictionaryDataStream.getStreamDataOutput(column));
     }
 }

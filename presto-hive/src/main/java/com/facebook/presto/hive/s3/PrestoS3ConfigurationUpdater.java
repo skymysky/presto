@@ -13,7 +13,6 @@
  */
 package com.facebook.presto.hive.s3;
 
-import com.facebook.presto.hive.S3ConfigurationUpdater;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import org.apache.hadoop.conf.Configuration;
@@ -28,9 +27,11 @@ public class PrestoS3ConfigurationUpdater
     private final String awsAccessKey;
     private final String awsSecretKey;
     private final String endpoint;
+    private final PrestoS3StorageClass s3StorageClass;
     private final PrestoS3SignerType signerType;
     private final boolean pathStyleAccess;
     private final boolean useInstanceCredentials;
+    private String s3IamRole;
     private final boolean sslEnabled;
     private final boolean sseEnabled;
     private final PrestoS3SseType sseType;
@@ -49,6 +50,8 @@ public class PrestoS3ConfigurationUpdater
     private final File stagingDirectory;
     private final boolean pinClientToCurrentRegion;
     private final String userAgentPrefix;
+    private final PrestoS3AclType aclType;
+    private boolean skipGlacierObjects;
 
     @Inject
     public PrestoS3ConfigurationUpdater(HiveS3Config config)
@@ -56,9 +59,11 @@ public class PrestoS3ConfigurationUpdater
         this.awsAccessKey = config.getS3AwsAccessKey();
         this.awsSecretKey = config.getS3AwsSecretKey();
         this.endpoint = config.getS3Endpoint();
+        this.s3StorageClass = config.getS3StorageClass();
         this.signerType = config.getS3SignerType();
         this.pathStyleAccess = config.isS3PathStyleAccess();
         this.useInstanceCredentials = config.isS3UseInstanceCredentials();
+        this.s3IamRole = config.getS3IamRole();
         this.sslEnabled = config.isS3SslEnabled();
         this.sseEnabled = config.isS3SseEnabled();
         this.sseType = config.getS3SseType();
@@ -77,6 +82,8 @@ public class PrestoS3ConfigurationUpdater
         this.stagingDirectory = config.getS3StagingDirectory();
         this.pinClientToCurrentRegion = config.isPinS3ClientToCurrentRegion();
         this.userAgentPrefix = config.getS3UserAgentPrefix();
+        this.aclType = config.getS3AclType();
+        this.skipGlacierObjects = config.isSkipGlacierObjects();
     }
 
     @Override
@@ -88,42 +95,48 @@ public class PrestoS3ConfigurationUpdater
         config.set("fs.s3n.impl", PrestoS3FileSystem.class.getName());
 
         if (awsAccessKey != null) {
-            config.set(PrestoS3FileSystem.S3_ACCESS_KEY, awsAccessKey);
+            config.set(S3_ACCESS_KEY, awsAccessKey);
         }
         if (awsSecretKey != null) {
-            config.set(PrestoS3FileSystem.S3_SECRET_KEY, awsSecretKey);
+            config.set(S3_SECRET_KEY, awsSecretKey);
         }
         if (endpoint != null) {
-            config.set(PrestoS3FileSystem.S3_ENDPOINT, endpoint);
+            config.set(S3_ENDPOINT, endpoint);
         }
+        config.set(S3_STORAGE_CLASS, s3StorageClass.name());
         if (signerType != null) {
-            config.set(PrestoS3FileSystem.S3_SIGNER_TYPE, signerType.name());
+            config.set(S3_SIGNER_TYPE, signerType.name());
         }
-        config.setBoolean(PrestoS3FileSystem.S3_PATH_STYLE_ACCESS, pathStyleAccess);
-        config.setBoolean(PrestoS3FileSystem.S3_USE_INSTANCE_CREDENTIALS, useInstanceCredentials);
-        config.setBoolean(PrestoS3FileSystem.S3_SSL_ENABLED, sslEnabled);
-        config.setBoolean(PrestoS3FileSystem.S3_SSE_ENABLED, sseEnabled);
-        config.set(PrestoS3FileSystem.S3_SSE_TYPE, sseType.name());
+        config.setBoolean(S3_PATH_STYLE_ACCESS, pathStyleAccess);
+        config.setBoolean(S3_USE_INSTANCE_CREDENTIALS, useInstanceCredentials);
+        if (s3IamRole != null) {
+            config.set(S3_IAM_ROLE, s3IamRole);
+        }
+        config.setBoolean(S3_SSL_ENABLED, sslEnabled);
+        config.setBoolean(S3_SSE_ENABLED, sseEnabled);
+        config.set(S3_SSE_TYPE, sseType.name());
         if (encryptionMaterialsProvider != null) {
-            config.set(PrestoS3FileSystem.S3_ENCRYPTION_MATERIALS_PROVIDER, encryptionMaterialsProvider);
+            config.set(S3_ENCRYPTION_MATERIALS_PROVIDER, encryptionMaterialsProvider);
         }
         if (kmsKeyId != null) {
-            config.set(PrestoS3FileSystem.S3_KMS_KEY_ID, kmsKeyId);
+            config.set(S3_KMS_KEY_ID, kmsKeyId);
         }
         if (sseKmsKeyId != null) {
-            config.set(PrestoS3FileSystem.S3_SSE_KMS_KEY_ID, sseKmsKeyId);
+            config.set(S3_SSE_KMS_KEY_ID, sseKmsKeyId);
         }
-        config.setInt(PrestoS3FileSystem.S3_MAX_CLIENT_RETRIES, maxClientRetries);
-        config.setInt(PrestoS3FileSystem.S3_MAX_ERROR_RETRIES, maxErrorRetries);
-        config.set(PrestoS3FileSystem.S3_MAX_BACKOFF_TIME, maxBackoffTime.toString());
-        config.set(PrestoS3FileSystem.S3_MAX_RETRY_TIME, maxRetryTime.toString());
-        config.set(PrestoS3FileSystem.S3_CONNECT_TIMEOUT, connectTimeout.toString());
-        config.set(PrestoS3FileSystem.S3_SOCKET_TIMEOUT, socketTimeout.toString());
-        config.set(PrestoS3FileSystem.S3_STAGING_DIRECTORY, stagingDirectory.toString());
-        config.setInt(PrestoS3FileSystem.S3_MAX_CONNECTIONS, maxConnections);
-        config.setLong(PrestoS3FileSystem.S3_MULTIPART_MIN_FILE_SIZE, multipartMinFileSize.toBytes());
-        config.setLong(PrestoS3FileSystem.S3_MULTIPART_MIN_PART_SIZE, multipartMinPartSize.toBytes());
-        config.setBoolean(PrestoS3FileSystem.S3_PIN_CLIENT_TO_CURRENT_REGION, pinClientToCurrentRegion);
-        config.set(PrestoS3FileSystem.S3_USER_AGENT_PREFIX, userAgentPrefix);
+        config.setInt(S3_MAX_CLIENT_RETRIES, maxClientRetries);
+        config.setInt(S3_MAX_ERROR_RETRIES, maxErrorRetries);
+        config.set(S3_MAX_BACKOFF_TIME, maxBackoffTime.toString());
+        config.set(S3_MAX_RETRY_TIME, maxRetryTime.toString());
+        config.set(S3_CONNECT_TIMEOUT, connectTimeout.toString());
+        config.set(S3_SOCKET_TIMEOUT, socketTimeout.toString());
+        config.set(S3_STAGING_DIRECTORY, stagingDirectory.toString());
+        config.setInt(S3_MAX_CONNECTIONS, maxConnections);
+        config.setLong(S3_MULTIPART_MIN_FILE_SIZE, multipartMinFileSize.toBytes());
+        config.setLong(S3_MULTIPART_MIN_PART_SIZE, multipartMinPartSize.toBytes());
+        config.setBoolean(S3_PIN_CLIENT_TO_CURRENT_REGION, pinClientToCurrentRegion);
+        config.set(S3_USER_AGENT_PREFIX, userAgentPrefix);
+        config.set(S3_ACL_TYPE, aclType.name());
+        config.setBoolean(S3_SKIP_GLACIER_OBJECTS, skipGlacierObjects);
     }
 }

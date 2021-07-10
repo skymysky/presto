@@ -13,34 +13,28 @@
  */
 package com.facebook.presto.operator.project;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.DictionaryId;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.operator.CompletedWork;
 import com.facebook.presto.operator.DriverYieldSignal;
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
-import com.google.common.primitives.Ints;
+import com.facebook.presto.operator.Work;
+import com.google.common.collect.ImmutableList;
 
 import java.util.List;
-import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
 public class InputPageProjection
         implements PageProjection
 {
-    private final Type type;
     private final InputChannels inputChannels;
 
-    public InputPageProjection(int inputChannel, Type type)
+    public InputPageProjection(int inputChannel)
     {
-        this.type = type;
         this.inputChannels = new InputChannels(inputChannel);
-    }
-
-    @Override
-    public Type getType()
-    {
-        return type;
     }
 
     @Override
@@ -56,32 +50,27 @@ public class InputPageProjection
     }
 
     @Override
-    public PageProjectionOutput project(ConnectorSession session, DriverYieldSignal yieldSignal, Page page, SelectedPositions selectedPositions)
+    public Work<List<Block>> project(SqlFunctionProperties properties, DriverYieldSignal yieldSignal, Page page, SelectedPositions selectedPositions)
     {
-        return new InputPageProjectionOutput(page, selectedPositions);
-    }
+        Block block = requireNonNull(page, "page is null").getBlock(0);
+        requireNonNull(selectedPositions, "selectedPositions is null");
 
-    private class InputPageProjectionOutput
-            implements PageProjectionOutput
-    {
-        private final Block block;
-        private final SelectedPositions selectedPositions;
-
-        public InputPageProjectionOutput(Page page, SelectedPositions selectedPositions)
-        {
-            this.block = requireNonNull(page, "page is null").getBlock(0);
-            this.selectedPositions = requireNonNull(selectedPositions, "selectedPositions is null");
+        Block result;
+        if (selectedPositions.isList()) {
+            result = new DictionaryBlock(
+                    selectedPositions.getOffset(),
+                    selectedPositions.size(),
+                    block.getLoadedBlock(),
+                    selectedPositions.getPositions(),
+                    false,
+                    DictionaryId.randomDictionaryId());
         }
-
-        @Override
-        public Optional<Block> compute()
-        {
-            if (selectedPositions.isList()) {
-                List<Integer> positionList = Ints.asList(selectedPositions.getPositions())
-                        .subList(selectedPositions.getOffset(), selectedPositions.getOffset() + selectedPositions.size());
-                return Optional.of(block.copyPositions(positionList));
-            }
-            return Optional.of(block.getRegion(selectedPositions.getOffset(), selectedPositions.size()));
+        else if (selectedPositions.getOffset() == 0 && selectedPositions.size() == page.getPositionCount()) {
+            result = block.getLoadedBlock();
         }
+        else {
+            result = block.getRegion(selectedPositions.getOffset(), selectedPositions.size());
+        }
+        return new CompletedWork<>(ImmutableList.of(result));
     }
 }

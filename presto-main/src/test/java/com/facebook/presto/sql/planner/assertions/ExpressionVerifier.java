@@ -20,6 +20,8 @@ import com.facebook.presto.sql.tree.BooleanLiteral;
 import com.facebook.presto.sql.tree.Cast;
 import com.facebook.presto.sql.tree.CoalesceExpression;
 import com.facebook.presto.sql.tree.ComparisonExpression;
+import com.facebook.presto.sql.tree.DecimalLiteral;
+import com.facebook.presto.sql.tree.DereferenceExpression;
 import com.facebook.presto.sql.tree.DoubleLiteral;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.FunctionCall;
@@ -33,8 +35,10 @@ import com.facebook.presto.sql.tree.LongLiteral;
 import com.facebook.presto.sql.tree.Node;
 import com.facebook.presto.sql.tree.NotExpression;
 import com.facebook.presto.sql.tree.NullLiteral;
+import com.facebook.presto.sql.tree.SearchedCaseExpression;
 import com.facebook.presto.sql.tree.SimpleCaseExpression;
 import com.facebook.presto.sql.tree.StringLiteral;
+import com.facebook.presto.sql.tree.SubscriptExpression;
 import com.facebook.presto.sql.tree.SymbolReference;
 import com.facebook.presto.sql.tree.TryExpression;
 import com.facebook.presto.sql.tree.WhenClause;
@@ -175,7 +179,7 @@ final class ExpressionVerifier
     {
         if (expectedExpression instanceof ComparisonExpression) {
             ComparisonExpression expected = (ComparisonExpression) expectedExpression;
-            if (actual.getType() == expected.getType()) {
+            if (actual.getOperator() == expected.getOperator()) {
                 return process(actual.getLeft(), expected.getLeft()) && process(actual.getRight(), expected.getRight());
             }
         }
@@ -187,7 +191,7 @@ final class ExpressionVerifier
     {
         if (expectedExpression instanceof ArithmeticBinaryExpression) {
             ArithmeticBinaryExpression expected = (ArithmeticBinaryExpression) expectedExpression;
-            if (actual.getType() == expected.getType()) {
+            if (actual.getOperator() == expected.getOperator()) {
                 return process(actual.getLeft(), expected.getLeft()) && process(actual.getRight(), expected.getRight());
             }
         }
@@ -224,6 +228,16 @@ final class ExpressionVerifier
     }
 
     @Override
+    protected Boolean visitDecimalLiteral(DecimalLiteral actual, Node expected)
+    {
+        if (expected instanceof DecimalLiteral) {
+            return getValueFromLiteral(actual).equals(getValueFromLiteral(expected));
+        }
+
+        return false;
+    }
+
+    @Override
     protected Boolean visitBooleanLiteral(BooleanLiteral actual, Node expected)
     {
         if (expected instanceof BooleanLiteral) {
@@ -242,6 +256,9 @@ final class ExpressionVerifier
         }
         else if (expression instanceof DoubleLiteral) {
             return String.valueOf(((DoubleLiteral) expression).getValue());
+        }
+        else if (expression instanceof DecimalLiteral) {
+            return String.valueOf(((DecimalLiteral) expression).getValue());
         }
         else if (expression instanceof GenericLiteral) {
             return ((GenericLiteral) expression).getValue();
@@ -266,7 +283,7 @@ final class ExpressionVerifier
     {
         if (expectedExpression instanceof LogicalBinaryExpression) {
             LogicalBinaryExpression expected = (LogicalBinaryExpression) expectedExpression;
-            if (actual.getType() == expected.getType()) {
+            if (actual.getOperator() == expected.getOperator()) {
                 return process(actual.getLeft(), expected.getLeft()) && process(actual.getRight(), expected.getRight());
             }
         }
@@ -395,6 +412,43 @@ final class ExpressionVerifier
 
         InListExpression expectedInList = (InListExpression) expected;
         return process(actual.getValues(), expectedInList.getValues());
+    }
+
+    @Override
+    protected Boolean visitDereferenceExpression(DereferenceExpression actual, Node expectedExpression)
+    {
+        if (!(expectedExpression instanceof DereferenceExpression)) {
+            return false;
+        }
+
+        DereferenceExpression expected = (DereferenceExpression) expectedExpression;
+        if (actual.getField().equals(expected.getField())) {
+            return process(actual.getBase(), expected.getBase());
+        }
+        return false;
+    }
+
+    @Override
+    protected Boolean visitSubscriptExpression(SubscriptExpression actual, Node expectedExpression)
+    {
+        if (!(expectedExpression instanceof SubscriptExpression)) {
+            return false;
+        }
+
+        SubscriptExpression expected = (SubscriptExpression) expectedExpression;
+
+        return process(actual.getBase(), expected.getBase()) && process(actual.getIndex(), expected.getIndex());
+    }
+
+    @Override
+    protected Boolean visitSearchedCaseExpression(SearchedCaseExpression actual, Node expectedExpression)
+    {
+        if (!(expectedExpression instanceof SearchedCaseExpression)) {
+            return false;
+        }
+
+        SearchedCaseExpression expected = (SearchedCaseExpression) expectedExpression;
+        return process(actual.getDefaultValue(), expected.getDefaultValue()) && process(actual.getWhenClauses(), expected.getWhenClauses());
     }
 
     private <T extends Node> boolean process(List<T> actuals, List<T> expecteds)

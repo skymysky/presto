@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.tpch;
 
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.RecordSet;
 import com.facebook.presto.spi.connector.ConnectorRecordSetProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.collect.ImmutableList;
 import io.airlift.tpch.TpchColumn;
 import io.airlift.tpch.TpchColumnType;
@@ -27,7 +27,6 @@ import io.airlift.tpch.TpchEntity;
 import io.airlift.tpch.TpchTable;
 
 import java.util.List;
-import java.util.Optional;
 
 import static com.facebook.presto.tpch.TpchRecordSet.createTpchRecordSet;
 import static io.airlift.tpch.TpchColumnTypes.IDENTIFIER;
@@ -53,7 +52,7 @@ public class TpchRecordSetProvider
             double scaleFactor,
             int partNumber,
             int totalParts,
-            Optional<TupleDomain<ColumnHandle>> predicate)
+            TupleDomain<ColumnHandle> predicate)
     {
         ImmutableList.Builder<TpchColumn<E>> builder = ImmutableList.builder();
         for (ColumnHandle column : columns) {

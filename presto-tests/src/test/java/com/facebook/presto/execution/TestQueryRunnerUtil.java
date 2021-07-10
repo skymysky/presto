@@ -14,8 +14,9 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.dispatcher.DispatchManager;
+import com.facebook.presto.server.BasicQueryInfo;
 import com.facebook.presto.spi.QueryId;
-import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.tests.DistributedQueryRunner;
 import com.facebook.presto.tpch.TpchPlugin;
 import com.google.common.collect.ImmutableMap;
@@ -24,6 +25,7 @@ import com.google.common.collect.ImmutableSet;
 import java.util.Map;
 import java.util.Set;
 
+import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
 import static com.facebook.presto.execution.QueryState.RUNNING;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -34,12 +36,14 @@ public final class TestQueryRunnerUtil
 
     public static QueryId createQuery(DistributedQueryRunner queryRunner, Session session, String sql)
     {
-        return queryRunner.getCoordinator().getQueryManager().createQuery(new TestingSessionContext(session), sql).getQueryId();
+        DispatchManager dispatchManager = queryRunner.getCoordinator().getDispatchManager();
+        getFutureValue(dispatchManager.createQuery(session.getQueryId(), "slug", 0, new TestingSessionContext(session), sql));
+        return session.getQueryId();
     }
 
     public static void cancelQuery(DistributedQueryRunner queryRunner, QueryId queryId)
     {
-        queryRunner.getCoordinator().getQueryManager().cancelQuery(queryId);
+        queryRunner.getCoordinator().getDispatchManager().cancelQuery(queryId);
     }
 
     public static void waitForQueryState(DistributedQueryRunner queryRunner, QueryId queryId, QueryState expectedQueryState)
@@ -51,23 +55,32 @@ public final class TestQueryRunnerUtil
     public static void waitForQueryState(DistributedQueryRunner queryRunner, QueryId queryId, Set<QueryState> expectedQueryStates)
             throws InterruptedException
     {
-        QueryManager queryManager = queryRunner.getCoordinator().getQueryManager();
+        DispatchManager dispatchManager = queryRunner.getCoordinator().getDispatchManager();
         do {
             // Heartbeat all the running queries, so they don't die while we're waiting
-            for (QueryInfo queryInfo : queryManager.getAllQueryInfo()) {
+            for (BasicQueryInfo queryInfo : dispatchManager.getQueries()) {
                 if (queryInfo.getState() == RUNNING) {
-                    queryManager.recordHeartbeat(queryInfo.getQueryId());
+                    dispatchManager.getQueryInfo(queryInfo.getQueryId());
                 }
             }
             MILLISECONDS.sleep(500);
         }
-        while (!expectedQueryStates.contains(queryManager.getQueryInfo(queryId).getState()));
+        while (!expectedQueryStates.contains(dispatchManager.getQueryInfo(queryId).getState()));
     }
 
-    public static DistributedQueryRunner createQueryRunner(Map<String, String> properties)
+    public static DistributedQueryRunner createQueryRunner()
             throws Exception
     {
-        DistributedQueryRunner queryRunner = new DistributedQueryRunner(testSessionBuilder().build(), 2, ImmutableMap.of(), properties, new SqlParserOptions());
+        return createQueryRunner(ImmutableMap.of());
+    }
+
+    public static DistributedQueryRunner createQueryRunner(Map<String, String> extraProperties)
+            throws Exception
+    {
+        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder().build())
+                .setExtraProperties(extraProperties)
+                .setNodeCount(2)
+                .build();
 
         try {
             queryRunner.installPlugin(new TpchPlugin());

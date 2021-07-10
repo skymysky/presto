@@ -13,48 +13,75 @@
  */
 package com.facebook.presto.execution.scheduler;
 
+import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.spi.HostAddress;
-import com.facebook.presto.spi.Node;
 import com.google.common.collect.SetMultimap;
 
 import java.net.InetAddress;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class NodeMap
 {
-    private final SetMultimap<HostAddress, Node> nodesByHostAndPort;
-    private final SetMultimap<InetAddress, Node> nodesByHost;
-    private final SetMultimap<NetworkLocation, Node> workersByNetworkPath;
+    private final Map<String, InternalNode> activeNodesByNodeId;
+    private final SetMultimap<NetworkLocation, InternalNode> activeWorkersByNetworkPath;
     private final Set<String> coordinatorNodeIds;
+    private final List<InternalNode> activeNodes;
+    private final List<InternalNode> allNodes;
+    private final SetMultimap<InetAddress, InternalNode> allNodesByHost;
+    private final SetMultimap<HostAddress, InternalNode> allNodesByHostAndPort;
 
-    public NodeMap(SetMultimap<HostAddress, Node> nodesByHostAndPort,
-            SetMultimap<InetAddress, Node> nodesByHost,
-            SetMultimap<NetworkLocation, Node> workersByNetworkPath,
-            Set<String> coordinatorNodeIds)
+    public NodeMap(
+            Map<String, InternalNode> activeNodesByNodeId,
+            SetMultimap<NetworkLocation, InternalNode> activeWorkersByNetworkPath,
+            Set<String> coordinatorNodeIds,
+            List<InternalNode> activeNodes,
+            List<InternalNode> allNodes,
+            SetMultimap<InetAddress, InternalNode> allNodesByHost,
+            SetMultimap<HostAddress, InternalNode> allNodesByHostAndPort)
     {
-        this.nodesByHostAndPort = nodesByHostAndPort;
-        this.nodesByHost = nodesByHost;
-        this.workersByNetworkPath = workersByNetworkPath;
+        this.activeNodesByNodeId = activeNodesByNodeId;
+        this.activeWorkersByNetworkPath = activeWorkersByNetworkPath;
         this.coordinatorNodeIds = coordinatorNodeIds;
+        this.activeNodes = activeNodes;
+        this.allNodes = allNodes;
+        this.allNodesByHost = allNodesByHost;
+        this.allNodesByHostAndPort = allNodesByHostAndPort;
     }
 
-    public SetMultimap<HostAddress, Node> getNodesByHostAndPort()
+    public Map<String, InternalNode> getActiveNodesByNodeId()
     {
-        return nodesByHostAndPort;
+        return activeNodesByNodeId;
     }
 
-    public SetMultimap<InetAddress, Node> getNodesByHost()
+    public SetMultimap<NetworkLocation, InternalNode> getActiveWorkersByNetworkPath()
     {
-        return nodesByHost;
-    }
-
-    public SetMultimap<NetworkLocation, Node> getWorkersByNetworkPath()
-    {
-        return workersByNetworkPath;
+        return activeWorkersByNetworkPath;
     }
 
     public Set<String> getCoordinatorNodeIds()
     {
         return coordinatorNodeIds;
+    }
+
+    public List<InternalNode> getActiveNodes()
+    {
+        return activeNodes;
+    }
+
+    public List<InternalNode> getAllNodes()
+    {
+        return allNodes;
+    }
+
+    public SetMultimap<InetAddress, InternalNode> getAllNodesByHost()
+    {
+        return allNodesByHost;
+    }
+
+    public SetMultimap<HostAddress, InternalNode> getAllNodesByHostAndPort()
+    {
+        return allNodesByHostAndPort;
     }
 }

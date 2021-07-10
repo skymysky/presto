@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
 
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.NotThreadSafe;
@@ -43,6 +43,12 @@ public final class OuterLookupSource
     {
         this.lookupSource = requireNonNull(lookupSource, "lookupSource is null");
         this.outerPositionTracker = requireNonNull(outerPositionTracker, "outerPositionTracker is null");
+    }
+
+    @Override
+    public boolean isEmpty()
+    {
+        return lookupSource.isEmpty();
     }
 
     @Override

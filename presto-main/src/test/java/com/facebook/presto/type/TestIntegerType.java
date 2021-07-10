@@ -13,11 +13,10 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
 
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
 
 public class TestIntegerType
         extends AbstractTestType
@@ -29,7 +28,7 @@ public class TestIntegerType
 
     public static Block createTestBlock()
     {
-        BlockBuilder blockBuilder = INTEGER.createBlockBuilder(new BlockBuilderStatus(), 15);
+        BlockBuilder blockBuilder = INTEGER.createBlockBuilder(null, 15);
         INTEGER.writeLong(blockBuilder, 1111);
         INTEGER.writeLong(blockBuilder, 1111);
         INTEGER.writeLong(blockBuilder, 1111);

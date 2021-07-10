@@ -13,24 +13,27 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.Range;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.BooleanType;
+import com.facebook.presto.common.type.CharType;
+import com.facebook.presto.common.type.DateType;
+import com.facebook.presto.common.type.DoubleType;
+import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.RealType;
+import com.facebook.presto.common.type.SmallintType;
+import com.facebook.presto.common.type.TimeType;
+import com.facebook.presto.common.type.TimeWithTimeZoneType;
+import com.facebook.presto.common.type.TimestampType;
+import com.facebook.presto.common.type.TimestampWithTimeZoneType;
+import com.facebook.presto.common.type.TinyintType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarcharType;
+import com.facebook.presto.plugin.jdbc.optimization.JdbcExpression;
 import com.facebook.presto.spi.ColumnHandle;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.Range;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.BooleanType;
-import com.facebook.presto.spi.type.DateType;
-import com.facebook.presto.spi.type.DoubleType;
-import com.facebook.presto.spi.type.IntegerType;
-import com.facebook.presto.spi.type.RealType;
-import com.facebook.presto.spi.type.SmallintType;
-import com.facebook.presto.spi.type.TimeType;
-import com.facebook.presto.spi.type.TimeWithTimeZoneType;
-import com.facebook.presto.spi.type.TimestampType;
-import com.facebook.presto.spi.type.TimestampWithTimeZoneType;
-import com.facebook.presto.spi.type.TinyintType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
+import com.facebook.presto.spi.ConnectorSession;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
@@ -44,8 +47,9 @@ import java.sql.Time;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
-import static com.facebook.presto.spi.type.DateTimeEncoding.unpackMillisUtc;
+import static com.facebook.presto.common.type.DateTimeEncoding.unpackMillisUtc;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
@@ -59,6 +63,10 @@ import static org.joda.time.DateTimeZone.UTC;
 
 public class QueryBuilder
 {
+    // not all databases support booleans, so use 1=1 and 1=0 instead
+    private static final String ALWAYS_TRUE = "1=1";
+    private static final String ALWAYS_FALSE = "1=0";
+
     private final String quote;
 
     private static class TypeAndValue
@@ -88,7 +96,16 @@ public class QueryBuilder
         this.quote = requireNonNull(quote, "quote is null");
     }
 
-    public PreparedStatement buildSql(JdbcClient client, Connection connection, String catalog, String schema, String table, List<JdbcColumnHandle> columns, TupleDomain<ColumnHandle> tupleDomain)
+    public PreparedStatement buildSql(
+            JdbcClient client,
+            ConnectorSession session,
+            Connection connection,
+            String catalog,
+            String schema,
+            String table,
+            List<JdbcColumnHandle> columns,
+            TupleDomain<ColumnHandle> tupleDomain,
+            Optional<JdbcExpression> additionalPredicate)
             throws SQLException
     {
         StringBuilder sql = new StringBuilder();
@@ -116,11 +133,20 @@ public class QueryBuilder
         List<TypeAndValue> accumulator = new ArrayList<>();
 
         List<String> clauses = toConjuncts(columns, tupleDomain, accumulator);
+        if (additionalPredicate.isPresent()) {
+            clauses = ImmutableList.<String>builder()
+                    .addAll(clauses)
+                    .add(additionalPredicate.get().getExpression())
+                    .build();
+            accumulator.addAll(additionalPredicate.get().getBoundConstantValues().stream()
+                    .map(constantExpression -> new TypeAndValue(constantExpression.getType(), constantExpression.getValue()))
+                    .collect(ImmutableList.toImmutableList()));
+        }
         if (!clauses.isEmpty()) {
             sql.append(" WHERE ")
                     .append(Joiner.on(" AND ").join(clauses));
         }
-
+        sql.append(String.format("/* %s : %s */", session.getUser(), session.getQueryId()));
         PreparedStatement statement = client.getPreparedStatement(connection, sql.toString());
 
         for (int i = 0; i < accumulator.size(); i++) {
@@ -165,6 +191,9 @@ public class QueryBuilder
             else if (typeAndValue.getType() instanceof VarcharType) {
                 statement.setString(i + 1, ((Slice) typeAndValue.getValue()).toStringUtf8());
             }
+            else if (typeAndValue.getType() instanceof CharType) {
+                statement.setString(i + 1, ((Slice) typeAndValue.getValue()).toStringUtf8());
+            }
             else {
                 throw new UnsupportedOperationException("Can't handle type: " + typeAndValue.getType());
             }
@@ -188,7 +217,8 @@ public class QueryBuilder
                 validType.equals(TimeWithTimeZoneType.TIME_WITH_TIME_ZONE) ||
                 validType.equals(TimestampType.TIMESTAMP) ||
                 validType.equals(TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE) ||
-                validType instanceof VarcharType;
+                validType instanceof VarcharType ||
+                validType instanceof CharType;
     }
 
     private List<String> toConjuncts(List<JdbcColumnHandle> columns, TupleDomain<ColumnHandle> tupleDomain, List<TypeAndValue> accumulator)
@@ -211,11 +241,11 @@ public class QueryBuilder
         checkArgument(domain.getType().isOrderable(), "Domain type must be orderable");
 
         if (domain.getValues().isNone()) {
-            return domain.isNullAllowed() ? quote(columnName) + " IS NULL" : "FALSE";
+            return domain.isNullAllowed() ? quote(columnName) + " IS NULL" : ALWAYS_FALSE;
         }
 
         if (domain.getValues().isAll()) {
-            return domain.isNullAllowed() ? "TRUE" : quote(columnName) + " IS NOT NULL";
+            return domain.isNullAllowed() ? ALWAYS_TRUE : quote(columnName) + " IS NOT NULL";
         }
 
         List<String> disjuncts = new ArrayList<>();
@@ -223,37 +253,15 @@ public class QueryBuilder
         for (Range range : domain.getValues().getRanges().getOrderedRanges()) {
             checkState(!range.isAll()); // Already checked
             if (range.isSingleValue()) {
-                singleValues.add(range.getLow().getValue());
+                singleValues.add(range.getSingleValue());
             }
             else {
                 List<String> rangeConjuncts = new ArrayList<>();
-                if (!range.getLow().isLowerUnbounded()) {
-                    switch (range.getLow().getBound()) {
-                        case ABOVE:
-                            rangeConjuncts.add(toPredicate(columnName, ">", range.getLow().getValue(), type, accumulator));
-                            break;
-                        case EXACTLY:
-                            rangeConjuncts.add(toPredicate(columnName, ">=", range.getLow().getValue(), type, accumulator));
-                            break;
-                        case BELOW:
-                            throw new IllegalArgumentException("Low marker should never use BELOW bound");
-                        default:
-                            throw new AssertionError("Unhandled bound: " + range.getLow().getBound());
-                    }
+                if (!range.isLowUnbounded()) {
+                    rangeConjuncts.add(toPredicate(columnName, range.isLowInclusive() ? ">=" : ">", range.getLowBoundedValue(), type, accumulator));
                 }
-                if (!range.getHigh().isUpperUnbounded()) {
-                    switch (range.getHigh().getBound()) {
-                        case ABOVE:
-                            throw new IllegalArgumentException("High marker should never use ABOVE bound");
-                        case EXACTLY:
-                            rangeConjuncts.add(toPredicate(columnName, "<=", range.getHigh().getValue(), type, accumulator));
-                            break;
-                        case BELOW:
-                            rangeConjuncts.add(toPredicate(columnName, "<", range.getHigh().getValue(), type, accumulator));
-                            break;
-                        default:
-                            throw new AssertionError("Unhandled bound: " + range.getHigh().getBound());
-                    }
+                if (!range.isHighUnbounded()) {
+                    rangeConjuncts.add(toPredicate(columnName, range.isHighInclusive() ? "<=" : "<", range.getHighBoundedValue(), type, accumulator));
                 }
                 // If rangeConjuncts is null, then the range was ALL, which should already have been checked for
                 checkState(!rangeConjuncts.isEmpty());

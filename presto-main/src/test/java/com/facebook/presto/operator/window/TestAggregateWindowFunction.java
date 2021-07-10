@@ -18,9 +18,9 @@ import org.intellij.lang.annotations.Language;
 import org.testng.annotations.Test;
 
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
 
 public class TestAggregateWindowFunction
@@ -432,7 +432,6 @@ public class TestAggregateWindowFunction
 
     @Test
     public void testSumCurrentRow()
-            throws Exception
     {
         MaterializedResult expected = resultBuilder(TEST_SESSION, INTEGER, VARCHAR, BIGINT)
                 .row(3, "F", 3L)
@@ -462,7 +461,6 @@ public class TestAggregateWindowFunction
 
     @Test
     public void testSumEmptyWindow()
-            throws Exception
     {
         MaterializedResult expected = resultBuilder(TEST_SESSION, INTEGER, VARCHAR, BIGINT)
                 .row(3, "F", null)

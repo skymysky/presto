@@ -15,12 +15,14 @@ package com.facebook.presto.operator;
 
 import com.facebook.presto.Session;
 import com.facebook.presto.block.BlockAssertions;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.DictionaryBlock;
-import com.facebook.presto.spi.block.DictionaryId;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.DictionaryId;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.metadata.MetadataManager;
+import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.gen.JoinCompiler;
 import com.facebook.presto.testing.TestingSession;
 import com.facebook.presto.type.TypeUtils;
@@ -38,11 +40,11 @@ import java.util.stream.IntStream;
 import static com.facebook.presto.block.BlockAssertions.createLongSequenceBlock;
 import static com.facebook.presto.block.BlockAssertions.createLongsBlock;
 import static com.facebook.presto.block.BlockAssertions.createStringSequenceBlock;
+import static com.facebook.presto.common.block.DictionaryId.randomDictionaryId;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.operator.GroupByHash.createGroupByHash;
-import static com.facebook.presto.spi.block.DictionaryId.randomDictionaryId;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.type.TypeUtils.getHashBlock;
 import static com.google.common.math.DoubleMath.log2;
 import static org.testng.Assert.assertEquals;
@@ -54,7 +56,7 @@ public class TestGroupByHash
     private static final int MAX_GROUP_ID = 500;
     private static final int[] CONTAINS_CHANNELS = new int[] {0};
     private static final Session TEST_SESSION = TestingSession.testSessionBuilder().build();
-    private static final JoinCompiler JOIN_COMPILER = new JoinCompiler();
+    private static final JoinCompiler JOIN_COMPILER = new JoinCompiler(MetadataManager.createTestMetadataManager(), new FeaturesConfig());
 
     @DataProvider
     public Object[][] dataType()
@@ -64,7 +66,6 @@ public class TestGroupByHash
 
     @Test
     public void testAddPage()
-            throws Exception
     {
         GroupByHash groupByHash = createGroupByHash(TEST_SESSION, ImmutableList.of(BIGINT), new int[] {0}, Optional.of(1), 100, JOIN_COMPILER);
         for (int tries = 0; tries < 2; tries++) {
@@ -94,7 +95,6 @@ public class TestGroupByHash
 
     @Test
     public void testNullGroup()
-            throws Exception
     {
         GroupByHash groupByHash = createGroupByHash(TEST_SESSION, ImmutableList.of(BIGINT), new int[] {0}, Optional.of(1), 100, JOIN_COMPILER);
 
@@ -117,7 +117,6 @@ public class TestGroupByHash
 
     @Test
     public void testGetGroupIds()
-            throws Exception
     {
         GroupByHash groupByHash = createGroupByHash(TEST_SESSION, ImmutableList.of(BIGINT), new int[] {0}, Optional.of(1), 100, JOIN_COMPILER);
         for (int tries = 0; tries < 2; tries++) {
@@ -140,7 +139,6 @@ public class TestGroupByHash
 
     @Test
     public void testTypes()
-            throws Exception
     {
         GroupByHash groupByHash = createGroupByHash(TEST_SESSION, ImmutableList.of(VARCHAR), new int[] {0}, Optional.of(1), 100, JOIN_COMPILER);
         // Additional bigint channel for hash
@@ -149,7 +147,6 @@ public class TestGroupByHash
 
     @Test
     public void testAppendTo()
-            throws Exception
     {
         Block valuesBlock = BlockAssertions.createStringSequenceBlock(0, 100);
         Block hashBlock = TypeUtils.getHashBlock(ImmutableList.of(VARCHAR), valuesBlock);
@@ -180,7 +177,6 @@ public class TestGroupByHash
 
     @Test
     public void testAppendToMultipleTuplesPerGroup()
-            throws Exception
     {
         List<Long> values = new ArrayList<>();
         for (long i = 0; i < 100; i++) {
@@ -205,7 +201,6 @@ public class TestGroupByHash
 
     @Test
     public void testContains()
-            throws Exception
     {
         Block valuesBlock = BlockAssertions.createDoubleSequenceBlock(0, 10);
         Block hashBlock = TypeUtils.getHashBlock(ImmutableList.of(DOUBLE), valuesBlock);
@@ -223,7 +218,6 @@ public class TestGroupByHash
 
     @Test
     public void testContainsMultipleColumns()
-            throws Exception
     {
         Block valuesBlock = BlockAssertions.createDoubleSequenceBlock(0, 10);
         Block stringValuesBlock = BlockAssertions.createStringSequenceBlock(0, 10);
@@ -240,7 +234,6 @@ public class TestGroupByHash
 
     @Test
     public void testForceRehash()
-            throws Exception
     {
         // Create a page with positionCount >> expected size of groupByHash
         Block valuesBlock = BlockAssertions.createStringSequenceBlock(0, 100);
@@ -258,7 +251,6 @@ public class TestGroupByHash
 
     @Test(dataProvider = "dataType")
     public void testUpdateMemory(Type type)
-            throws Exception
     {
         // Create a page with positionCount >> expected size of groupByHash
         int length = 1_000_000;
@@ -295,7 +287,6 @@ public class TestGroupByHash
 
     @Test(dataProvider = "dataType")
     public void testMemoryReservationYield(Type type)
-            throws Exception
     {
         // Create a page with positionCount >> expected size of groupByHash
         int length = 1_000_000;
@@ -377,7 +368,6 @@ public class TestGroupByHash
 
     @Test
     public void testMemoryReservationYieldWithDictionary()
-            throws Exception
     {
         // Create a page with positionCount >> expected size of groupByHash
         int dictionaryLength = 1_000;

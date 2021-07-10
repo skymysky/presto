@@ -13,40 +13,33 @@
  */
 package com.facebook.presto.operator.project;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.operator.CompletedWork;
 import com.facebook.presto.operator.DriverYieldSignal;
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.operator.Work;
 import com.google.common.collect.ImmutableList;
 
-import java.util.Optional;
+import java.util.List;
 
-import static com.facebook.presto.spi.type.TypeUtils.writeNativeValue;
+import static com.facebook.presto.common.type.TypeUtils.writeNativeValue;
 
 public class ConstantPageProjection
         implements PageProjection
 {
     private static final InputChannels INPUT_PARAMETERS = new InputChannels(ImmutableList.of());
 
-    private final Type type;
     private final Block value;
 
     public ConstantPageProjection(Object value, Type type)
     {
-        this.type = type;
-        BlockBuilder blockBuilder = type.createBlockBuilder(new BlockBuilderStatus(), 1);
+        BlockBuilder blockBuilder = type.createBlockBuilder(null, 1);
         writeNativeValue(type, blockBuilder, value);
         this.value = blockBuilder.build();
-    }
-
-    @Override
-    public Type getType()
-    {
-        return type;
     }
 
     @Override
@@ -62,27 +55,8 @@ public class ConstantPageProjection
     }
 
     @Override
-    public PageProjectionOutput project(ConnectorSession session, DriverYieldSignal yieldSignal, Page page, SelectedPositions selectedPositions)
+    public Work<List<Block>> project(SqlFunctionProperties properties, DriverYieldSignal yieldSignal, Page page, SelectedPositions selectedPositions)
     {
-        return new ConstantPageProjectionOutput(value, selectedPositions.size());
-    }
-
-    private class ConstantPageProjectionOutput
-            implements PageProjectionOutput
-    {
-        private final Block value;
-        private final int size;
-
-        public ConstantPageProjectionOutput(Block value, int size)
-        {
-            this.value = value;
-            this.size = size;
-        }
-
-        @Override
-        public Optional<Block> compute()
-        {
-            return Optional.of(new RunLengthEncodedBlock(value, size));
-        }
+        return new CompletedWork<>(ImmutableList.of(new RunLengthEncodedBlock(value, selectedPositions.size())));
     }
 }

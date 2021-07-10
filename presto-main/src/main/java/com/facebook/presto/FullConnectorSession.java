@@ -13,17 +13,20 @@
  */
 package com.facebook.presto;
 
-import com.facebook.presto.connector.ConnectorId;
+import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.facebook.presto.metadata.SessionPropertyManager;
+import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.security.Identity;
-import com.facebook.presto.spi.type.TimeZoneKey;
+import com.facebook.presto.spi.function.SqlFunctionId;
+import com.facebook.presto.spi.function.SqlInvokedFunction;
+import com.facebook.presto.spi.security.ConnectorIdentity;
 import com.google.common.collect.ImmutableMap;
 
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_SESSION_PROPERTY;
 import static com.google.common.base.MoreObjects.toStringHelper;
@@ -33,97 +36,108 @@ import static java.util.Objects.requireNonNull;
 public class FullConnectorSession
         implements ConnectorSession
 {
-    private final String queryId;
-    private final Identity identity;
-    private final Optional<String> source;
-    private final TimeZoneKey timeZoneKey;
-    private final Locale locale;
-    private final long startTime;
+    private final Session session;
+    private final ConnectorIdentity identity;
     private final Map<String, String> properties;
     private final ConnectorId connectorId;
     private final String catalog;
     private final SessionPropertyManager sessionPropertyManager;
+    private final SqlFunctionProperties sqlFunctionProperties;
+    private final Map<SqlFunctionId, SqlInvokedFunction> sessionFunctions;
 
-    public FullConnectorSession(
-            String queryId,
-            Identity identity,
-            Optional<String> source,
-            TimeZoneKey timeZoneKey,
-            Locale locale,
-            long startTime)
+    public FullConnectorSession(Session session, ConnectorIdentity identity)
     {
-        this.queryId = requireNonNull(queryId, "queryId is null");
+        this.session = requireNonNull(session, "session is null");
         this.identity = requireNonNull(identity, "identity is null");
-        this.source = requireNonNull(source, "source is null");
-        this.timeZoneKey = requireNonNull(timeZoneKey, "timeZoneKey is null");
-        this.locale = requireNonNull(locale, "locale is null");
-        this.startTime = startTime;
-
         this.properties = null;
         this.connectorId = null;
         this.catalog = null;
         this.sessionPropertyManager = null;
+        this.sqlFunctionProperties = session.getSqlFunctionProperties();
+        this.sessionFunctions = ImmutableMap.copyOf(session.getSessionFunctions());
     }
 
     public FullConnectorSession(
-            String queryId,
-            Identity identity,
-            Optional<String> source,
-            TimeZoneKey timeZoneKey,
-            Locale locale,
-            long startTime,
+            Session session,
+            ConnectorIdentity identity,
             Map<String, String> properties,
             ConnectorId connectorId,
             String catalog,
             SessionPropertyManager sessionPropertyManager)
     {
-        this.queryId = requireNonNull(queryId, "queryId is null");
+        this.session = requireNonNull(session, "session is null");
         this.identity = requireNonNull(identity, "identity is null");
-        this.source = requireNonNull(source, "source is null");
-        this.timeZoneKey = requireNonNull(timeZoneKey, "timeZoneKey is null");
-        this.locale = requireNonNull(locale, "locale is null");
-        this.startTime = startTime;
-
         this.properties = ImmutableMap.copyOf(requireNonNull(properties, "properties is null"));
         this.connectorId = requireNonNull(connectorId, "connectorId is null");
         this.catalog = requireNonNull(catalog, "catalog is null");
         this.sessionPropertyManager = requireNonNull(sessionPropertyManager, "sessionPropertyManager is null");
+        this.sqlFunctionProperties = session.getSqlFunctionProperties();
+        this.sessionFunctions = ImmutableMap.copyOf(session.getSessionFunctions());
+    }
+
+    public Session getSession()
+    {
+        return session;
     }
 
     @Override
     public String getQueryId()
     {
-        return queryId;
+        return session.getQueryId().toString();
     }
 
     @Override
     public Optional<String> getSource()
     {
-        return source;
+        return session.getSource();
     }
 
     @Override
-    public Identity getIdentity()
+    public ConnectorIdentity getIdentity()
     {
         return identity;
     }
 
     @Override
-    public TimeZoneKey getTimeZoneKey()
-    {
-        return timeZoneKey;
-    }
-
-    @Override
     public Locale getLocale()
     {
-        return locale;
+        return session.getLocale();
     }
 
     @Override
     public long getStartTime()
     {
-        return startTime;
+        return session.getStartTime();
+    }
+
+    @Override
+    public Optional<String> getTraceToken()
+    {
+        return session.getTraceToken();
+    }
+
+    @Override
+    public Optional<String> getClientInfo()
+    {
+        return session.getClientInfo();
+    }
+
+    @Override
+    public Set<String> getClientTags()
+    {
+        return session.getClientTags();
+    }
+
+    @Override
+    public SqlFunctionProperties getSqlFunctionProperties()
+    {
+        return sqlFunctionProperties;
+    }
+
+    @Override
+    public Map<SqlFunctionId, SqlInvokedFunction> getSessionFunctions()
+    {
+        return sessionFunctions;
     }
 
     @Override
@@ -137,16 +151,21 @@ public class FullConnectorSession
     }
 
     @Override
+    public Optional<String> getSchema()
+    {
+        return session.getSchema();
+    }
+
+    @Override
     public String toString()
     {
         return toStringHelper(this)
-                .omitNullValues()
-                .add("queryId", queryId)
+                .add("queryId", getQueryId())
                 .add("user", getUser())
-                .add("source", source.orElse(null))
-                .add("timeZoneKey", timeZoneKey)
-                .add("locale", locale)
-                .add("startTime", startTime)
+                .add("source", getSource().orElse(null))
+                .add("traceToken", getTraceToken().orElse(null))
+                .add("locale", getLocale())
+                .add("startTime", getStartTime())
                 .add("properties", properties)
                 .omitNullValues()
                 .toString();

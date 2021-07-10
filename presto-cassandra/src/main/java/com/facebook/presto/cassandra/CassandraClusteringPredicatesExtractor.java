@@ -15,12 +15,11 @@ package com.facebook.presto.cassandra;
 
 import com.datastax.driver.core.VersionNumber;
 import com.facebook.presto.cassandra.util.CassandraCqlUtils;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.Range;
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ColumnHandle;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.Range;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.base.Joiner;
-import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 
@@ -30,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 
 import static com.facebook.presto.cassandra.util.CassandraCqlUtils.toCQLCompatibleString;
+import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 public class CassandraClusteringPredicatesExtractor
@@ -91,41 +91,19 @@ public class CassandraClusteringPredicatesExtractor
                                         columnHandle.getCassandraType()));
                             }
                             else {
-                                if (!range.getLow().isLowerUnbounded()) {
-                                    switch (range.getLow().getBound()) {
-                                        case ABOVE:
-                                            rangeConjuncts.add(CassandraCqlUtils.validColumnName(columnHandle.getName()) + " > "
-                                                    + CassandraCqlUtils.cqlValue(toCQLCompatibleString(range.getLow().getValue()),
-                                                    columnHandle.getCassandraType()));
-                                            break;
-                                        case EXACTLY:
-                                            rangeConjuncts.add(CassandraCqlUtils.validColumnName(columnHandle.getName()) + " >= "
-                                                    + CassandraCqlUtils.cqlValue(toCQLCompatibleString(range.getLow().getValue()),
-                                                    columnHandle.getCassandraType()));
-                                            break;
-                                        case BELOW:
-                                            throw new VerifyException("Low Marker should never use BELOW bound");
-                                        default:
-                                            throw new AssertionError("Unhandled bound: " + range.getLow().getBound());
-                                    }
+                                if (!range.isLowUnbounded()) {
+                                    rangeConjuncts.add(format(
+                                            "%s %s %s",
+                                            CassandraCqlUtils.validColumnName(columnHandle.getName()),
+                                            range.isLowInclusive() ? ">=" : ">",
+                                            CassandraCqlUtils.cqlValue(toCQLCompatibleString(range.getLowBoundedValue()), columnHandle.getCassandraType())));
                                 }
-                                if (!range.getHigh().isUpperUnbounded()) {
-                                    switch (range.getHigh().getBound()) {
-                                        case ABOVE:
-                                            throw new VerifyException("High Marker should never use ABOVE bound");
-                                        case EXACTLY:
-                                            rangeConjuncts.add(CassandraCqlUtils.validColumnName(columnHandle.getName()) + " <= "
-                                                    + CassandraCqlUtils.cqlValue(toCQLCompatibleString(range.getHigh().getValue()),
-                                                    columnHandle.getCassandraType()));
-                                            break;
-                                        case BELOW:
-                                            rangeConjuncts.add(CassandraCqlUtils.validColumnName(columnHandle.getName()) + " < "
-                                                    + CassandraCqlUtils.cqlValue(toCQLCompatibleString(range.getHigh().getValue()),
-                                                    columnHandle.getCassandraType()));
-                                            break;
-                                        default:
-                                            throw new AssertionError("Unhandled bound: " + range.getHigh().getBound());
-                                    }
+                                if (!range.isHighUnbounded()) {
+                                    rangeConjuncts.add(format(
+                                            "%s %s %s",
+                                            CassandraCqlUtils.validColumnName(columnHandle.getName()),
+                                            range.isHighInclusive() ? "<=" : "<",
+                                            CassandraCqlUtils.cqlValue(toCQLCompatibleString(range.getHighBoundedValue()), columnHandle.getCassandraType())));
                                 }
                             }
                         }

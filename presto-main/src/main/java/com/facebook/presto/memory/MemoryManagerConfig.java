@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.memory;
 
-import io.airlift.configuration.Config;
-import io.airlift.configuration.ConfigDescription;
-import io.airlift.configuration.DefunctConfig;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.configuration.DefunctConfig;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.airlift.units.MinDuration;
@@ -23,25 +23,33 @@ import io.airlift.units.MinDuration;
 import javax.validation.constraints.NotNull;
 
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
+import static io.airlift.units.DataSize.succinctBytes;
 import static java.util.concurrent.TimeUnit.MINUTES;
 
-@DefunctConfig("experimental.cluster-memory-manager-enabled")
+@DefunctConfig({
+        "experimental.cluster-memory-manager-enabled",
+        "query.low-memory-killer.enabled"})
 public class MemoryManagerConfig
 {
+    // enforced against user memory allocations
     private DataSize maxQueryMemory = new DataSize(20, GIGABYTE);
-    private boolean killOnOutOfMemory;
+    private DataSize softMaxQueryMemory;
+    // enforced against user + system memory allocations (default is maxQueryMemory * 2)
+    private DataSize maxQueryTotalMemory;
+    private DataSize softMaxQueryTotalMemory;
+    private String lowMemoryKillerPolicy = LowMemoryKillerPolicy.NONE;
     private Duration killOnOutOfMemoryDelay = new Duration(5, MINUTES);
+    private boolean tableFinishOperatorMemoryTrackingEnabled;
 
-    public boolean isKillOnOutOfMemory()
+    public String getLowMemoryKillerPolicy()
     {
-        return killOnOutOfMemory;
+        return lowMemoryKillerPolicy;
     }
 
-    @Config("query.low-memory-killer.enabled")
-    @ConfigDescription("Enable low memory killer")
-    public MemoryManagerConfig setKillOnOutOfMemory(boolean killOnOutOfMemory)
+    @Config("query.low-memory-killer.policy")
+    public MemoryManagerConfig setLowMemoryKillerPolicy(String lowMemoryKillerPolicy)
     {
-        this.killOnOutOfMemory = killOnOutOfMemory;
+        this.lowMemoryKillerPolicy = lowMemoryKillerPolicy;
         return this;
     }
 
@@ -71,5 +79,75 @@ public class MemoryManagerConfig
     {
         this.maxQueryMemory = maxQueryMemory;
         return this;
+    }
+
+    @NotNull
+    public DataSize getSoftMaxQueryMemory()
+    {
+        if (softMaxQueryMemory == null) {
+            return getMaxQueryMemory();
+        }
+        return softMaxQueryMemory;
+    }
+
+    @Config("query.soft-max-memory")
+    public MemoryManagerConfig setSoftMaxQueryMemory(DataSize softMaxQueryMemory)
+    {
+        this.softMaxQueryMemory = softMaxQueryMemory;
+        return this;
+    }
+
+    @NotNull
+    public DataSize getMaxQueryTotalMemory()
+    {
+        if (maxQueryTotalMemory == null) {
+            return succinctBytes(maxQueryMemory.toBytes() * 2);
+        }
+        return maxQueryTotalMemory;
+    }
+
+    @Config("query.max-total-memory")
+    public MemoryManagerConfig setMaxQueryTotalMemory(DataSize maxQueryTotalMemory)
+    {
+        this.maxQueryTotalMemory = maxQueryTotalMemory;
+        return this;
+    }
+
+    @NotNull
+    public DataSize getSoftMaxQueryTotalMemory()
+    {
+        if (softMaxQueryTotalMemory == null) {
+            if (maxQueryTotalMemory != null) {
+                return maxQueryTotalMemory;
+            }
+            return succinctBytes(getSoftMaxQueryMemory().toBytes() * 2);
+        }
+        return softMaxQueryTotalMemory;
+    }
+
+    @Config("query.soft-max-total-memory")
+    public MemoryManagerConfig setSoftMaxQueryTotalMemory(DataSize softMaxQueryTotalMemory)
+    {
+        this.softMaxQueryTotalMemory = softMaxQueryTotalMemory;
+        return this;
+    }
+
+    public boolean isTableFinishOperatorMemoryTrackingEnabled()
+    {
+        return tableFinishOperatorMemoryTrackingEnabled;
+    }
+
+    @Config("table-finish-operator-memory-tracking-enabled")
+    public MemoryManagerConfig setTableFinishOperatorMemoryTrackingEnabled(boolean tableFinishOperatorMemoryTrackingEnabled)
+    {
+        this.tableFinishOperatorMemoryTrackingEnabled = tableFinishOperatorMemoryTrackingEnabled;
+        return this;
+    }
+
+    public static class LowMemoryKillerPolicy
+    {
+        public static final String NONE = "none";
+        public static final String TOTAL_RESERVATION = "total-reservation";
+        public static final String TOTAL_RESERVATION_ON_BLOCKED_NODES = "total-reservation-on-blocked-nodes";
     }
 }

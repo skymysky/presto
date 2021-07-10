@@ -13,15 +13,14 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 
 import java.util.List;
 
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.util.StructuralTestUtil.arrayBlockOf;
 
 public class TestIntegerArrayType
@@ -29,12 +28,12 @@ public class TestIntegerArrayType
 {
     public TestIntegerArrayType()
     {
-        super(new TypeRegistry().getType(parseTypeSignature("array(integer)")), List.class, createTestBlock(new TypeRegistry().getType(parseTypeSignature("array(integer)"))));
+        super(functionAndTypeManager.getType(parseTypeSignature("array(integer)")), List.class, createTestBlock(functionAndTypeManager.getType(parseTypeSignature("array(integer)"))));
     }
 
     public static Block createTestBlock(Type arrayType)
     {
-        BlockBuilder blockBuilder = arrayType.createBlockBuilder(new BlockBuilderStatus(), 4);
+        BlockBuilder blockBuilder = arrayType.createBlockBuilder(null, 4);
         arrayType.writeObject(blockBuilder, arrayBlockOf(INTEGER, 1, 2));
         arrayType.writeObject(blockBuilder, arrayBlockOf(INTEGER, 1, 2, 3));
         arrayType.writeObject(blockBuilder, arrayBlockOf(INTEGER, 1, 2, 3));
@@ -46,7 +45,7 @@ public class TestIntegerArrayType
     protected Object getGreaterValue(Object value)
     {
         Block block = (Block) value;
-        BlockBuilder blockBuilder = INTEGER.createBlockBuilder(new BlockBuilderStatus(), block.getPositionCount() + 1);
+        BlockBuilder blockBuilder = INTEGER.createBlockBuilder(null, block.getPositionCount() + 1);
         for (int i = 0; i < block.getPositionCount(); i++) {
             INTEGER.appendTo(block, i, blockBuilder);
         }

@@ -1,13 +1,13 @@
-# Presto [![Build Status](https://travis-ci.org/prestodb/presto.svg?branch=master)](https://travis-ci.org/prestodb/presto)
+# Presto [![Build Status](https://travis-ci.com/prestodb/presto.svg?branch=master)](https://travis-ci.com/prestodb/presto)
 
 Presto is a distributed SQL query engine for big data.
 
-See the [User Manual](https://prestodb.io/docs/current/) for deployment instructions and end user documentation.
+See the [User Manual](https://prestodb.github.io/docs/current/) for deployment instructions and end user documentation.
 
 ## Requirements
 
 * Mac OS X or Linux
-* Java 8 Update 92 or higher (8u92+), 64-bit
+* Java 8 Update 151 or higher (8u151+), 64-bit. Both Oracle JDK and OpenJDK are supported.
 * Maven 3.3.9+ (for building)
 * Python 2.4+ (for running with the launcher script)
 
@@ -39,7 +39,7 @@ Presto comes with sample configuration that should work out-of-the-box for devel
 
 * Main Class: `com.facebook.presto.server.PrestoServer`
 * VM Options: `-ea -XX:+UseG1GC -XX:G1HeapRegionSize=32M -XX:+UseGCOverheadLimit -XX:+ExplicitGCInvokesConcurrent -Xmx2G -Dconfig=etc/config.properties -Dlog.levels-file=etc/log.properties`
-* Working directory: `$MODULE_DIR$`
+* Working directory: `$MODULE_WORKING_DIR$` or `$MODULE_DIR$`(Depends your version of IntelliJ)
 * Use classpath of module: `presto-main`
 
 The working directory should be the `presto-main` subdirectory. In IntelliJ, using `$MODULE_DIR$` accomplishes this automatically.
@@ -72,7 +72,7 @@ In the sample configuration, the Hive connector is mounted in the `hive` catalog
 
     SHOW TABLES FROM hive.default;
 
-## Developers
+## Code Style
 
 We recommend you use IntelliJ as your IDE. The code style template for the project can be found in the [codestyle](https://github.com/airlift/codestyle) repository along with our general programming and Java guidelines. In addition to those you should also adhere to the following:
 
@@ -84,3 +84,28 @@ We recommend you use IntelliJ as your IDE. The code style template for the proje
 * Avoid using the ternary operator except for trivial expressions.
 * Use an assertion from Airlift's `Assertions` class if there is one that covers your case rather than writing the assertion by hand. Over time we may move over to more fluent assertions like AssertJ.
 * When writing a Git commit message, follow these [guidelines](https://chris.beams.io/posts/git-commit/).
+
+## Building the Documentation
+
+To learn how to build the docs, see the [docs README](presto-docs/README.md).
+
+## Building the Web UI
+
+The Presto Web UI is composed of several React components and is written in JSX and ES6. This source code is compiled and packaged into browser-compatible Javascript, which is then checked in to the Presto source code (in the `dist` folder). You must have [Node.js](https://nodejs.org/en/download/) and [Yarn](https://yarnpkg.com/en/) installed to execute these commands. To update this folder after making changes, simply run:
+
+    yarn --cwd presto-main/src/main/resources/webapp/src install
+
+If no Javascript dependencies have changed (i.e., no changes to `package.json`), it is faster to run:
+
+    yarn --cwd presto-main/src/main/resources/webapp/src run package
+
+To simplify iteration, you can also run in `watch` mode, which automatically re-compiles when changes to source files are detected:
+
+    yarn --cwd presto-main/src/main/resources/webapp/src run watch
+
+To iterate quickly, simply re-build the project in IntelliJ after packaging is complete. Project resources will be hot-reloaded and changes are reflected on browser refresh.
+
+## Release Notes
+
+When authoring a pull request, the PR description should include its relevant release notes.
+Follow [Release Notes Guidelines](https://github.com/prestodb/presto/wiki/Release-Notes-Guidelines) when authoring release notes. 

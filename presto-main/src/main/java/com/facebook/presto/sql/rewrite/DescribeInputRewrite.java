@@ -14,9 +14,10 @@
 package com.facebook.presto.sql.rewrite;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.security.AccessControl;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.sql.analyzer.Analysis;
 import com.facebook.presto.sql.analyzer.Analyzer;
 import com.facebook.presto.sql.analyzer.QueryExplainer;
@@ -37,7 +38,9 @@ import com.google.common.collect.ImmutableList;
 import java.util.List;
 import java.util.Optional;
 
+import static com.facebook.presto.common.type.UnknownType.UNKNOWN;
 import static com.facebook.presto.execution.ParameterExtractor.getParameters;
+import static com.facebook.presto.sql.ParsingUtil.createParsingOptions;
 import static com.facebook.presto.sql.QueryUtil.aliased;
 import static com.facebook.presto.sql.QueryUtil.ascending;
 import static com.facebook.presto.sql.QueryUtil.identifier;
@@ -46,7 +49,6 @@ import static com.facebook.presto.sql.QueryUtil.row;
 import static com.facebook.presto.sql.QueryUtil.selectList;
 import static com.facebook.presto.sql.QueryUtil.simpleQuery;
 import static com.facebook.presto.sql.QueryUtil.values;
-import static com.facebook.presto.type.UnknownType.UNKNOWN;
 import static java.util.Objects.requireNonNull;
 
 final class DescribeInputRewrite
@@ -60,9 +62,10 @@ final class DescribeInputRewrite
             Optional<QueryExplainer> queryExplainer,
             Statement node,
             List<Expression> parameters,
-            AccessControl accessControl)
+            AccessControl accessControl,
+            WarningCollector warningCollector)
     {
-        return (Statement) new Visitor(session, parser, metadata, queryExplainer, parameters, accessControl).process(node, null);
+        return (Statement) new Visitor(session, parser, metadata, queryExplainer, parameters, accessControl, warningCollector).process(node, null);
     }
 
     private static final class Visitor
@@ -74,6 +77,7 @@ final class DescribeInputRewrite
         private final Optional<QueryExplainer> queryExplainer;
         private final List<Expression> parameters;
         private final AccessControl accessControl;
+        private final WarningCollector warningCollector;
 
         public Visitor(
                 Session session,
@@ -81,7 +85,8 @@ final class DescribeInputRewrite
                 Metadata metadata,
                 Optional<QueryExplainer> queryExplainer,
                 List<Expression> parameters,
-                AccessControl accessControl)
+                AccessControl accessControl,
+                WarningCollector warningCollector)
         {
             this.session = requireNonNull(session, "session is null");
             this.parser = parser;
@@ -89,6 +94,7 @@ final class DescribeInputRewrite
             this.queryExplainer = queryExplainer;
             this.accessControl = accessControl;
             this.parameters = parameters;
+            this.warningCollector = requireNonNull(warningCollector, "warningCollector is null");
         }
 
         @Override
@@ -96,10 +102,10 @@ final class DescribeInputRewrite
                 throws SemanticException
         {
             String sqlString = session.getPreparedStatement(node.getName().getValue());
-            Statement statement = parser.createStatement(sqlString);
+            Statement statement = parser.createStatement(sqlString, createParsingOptions(session, warningCollector));
 
             // create  analysis for the query we are describing.
-            Analyzer analyzer = new Analyzer(session, metadata, parser, accessControl, queryExplainer, parameters);
+            Analyzer analyzer = new Analyzer(session, metadata, parser, accessControl, queryExplainer, parameters, warningCollector);
             Analysis analysis = analyzer.analyze(statement, true);
 
             // get all parameters in query
@@ -123,6 +129,7 @@ final class DescribeInputRewrite
                     Optional.empty(),
                     Optional.empty(),
                     Optional.of(ordering(ascending("Position"))),
+                    Optional.empty(),
                     limit);
         }
 

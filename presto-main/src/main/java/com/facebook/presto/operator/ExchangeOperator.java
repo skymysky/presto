@@ -13,24 +13,18 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.connector.ConnectorId;
-import com.facebook.presto.execution.SystemMemoryUsageListener;
-import com.facebook.presto.execution.buffer.PagesSerde;
+import com.facebook.presto.common.Page;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
-import com.facebook.presto.execution.buffer.SerializedPage;
 import com.facebook.presto.metadata.Split;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.UpdatablePageSource;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.page.PagesSerde;
+import com.facebook.presto.spi.page.SerializedPage;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.split.RemoteSplit;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.google.common.util.concurrent.ListenableFuture;
 
-import javax.annotation.concurrent.NotThreadSafe;
-
 import java.io.Closeable;
-import java.net.URI;
-import java.util.List;
 import java.util.Optional;
 import java.util.function.Supplier;
 
@@ -48,24 +42,21 @@ public class ExchangeOperator
     {
         private final int operatorId;
         private final PlanNodeId sourceId;
-        private final ExchangeClientSupplier exchangeClientSupplier;
+        private final TaskExchangeClientManager taskExchangeClientManager;
         private final PagesSerdeFactory serdeFactory;
-        private final List<Type> types;
-        private ExchangeClient exchangeClient = null;
+        private ExchangeClient exchangeClient;
         private boolean closed;
 
         public ExchangeOperatorFactory(
                 int operatorId,
                 PlanNodeId sourceId,
-                ExchangeClientSupplier exchangeClientSupplier,
-                PagesSerdeFactory serdeFactory,
-                List<Type> types)
+                TaskExchangeClientManager taskExchangeClientManager,
+                PagesSerdeFactory serdeFactory)
         {
             this.operatorId = operatorId;
             this.sourceId = sourceId;
-            this.exchangeClientSupplier = exchangeClientSupplier;
+            this.taskExchangeClientManager = requireNonNull(taskExchangeClientManager, "taskExchangeClientManager is null");
             this.serdeFactory = serdeFactory;
-            this.types = types;
         }
 
         @Override
@@ -75,23 +66,16 @@ public class ExchangeOperator
         }
 
         @Override
-        public List<Type> getTypes()
-        {
-            return types;
-        }
-
-        @Override
         public SourceOperator createOperator(DriverContext driverContext)
         {
             checkState(!closed, "Factory is already closed");
             OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, sourceId, ExchangeOperator.class.getSimpleName());
             if (exchangeClient == null) {
-                exchangeClient = exchangeClientSupplier.get(new UpdateSystemMemory(driverContext.getPipelineContext()));
+                exchangeClient = taskExchangeClientManager.createExchangeClient(driverContext.getPipelineContext().localSystemMemoryContext());
             }
 
             return new ExchangeOperator(
                     operatorContext,
-                    types,
                     sourceId,
                     serdeFactory.createPagesSerde(),
                     exchangeClient);
@@ -104,38 +88,14 @@ public class ExchangeOperator
         }
     }
 
-    @NotThreadSafe
-    private static final class UpdateSystemMemory
-            implements SystemMemoryUsageListener
-    {
-        private final PipelineContext pipelineContext;
-
-        public UpdateSystemMemory(PipelineContext pipelineContext)
-        {
-            this.pipelineContext = requireNonNull(pipelineContext, "pipelineContext is null");
-        }
-
-        @Override
-        public void updateSystemMemoryUsage(long deltaMemoryInBytes)
-        {
-            if (deltaMemoryInBytes > 0) {
-                pipelineContext.reserveSystemMemory(deltaMemoryInBytes);
-            }
-            else {
-                pipelineContext.freeSystemMemory(-deltaMemoryInBytes);
-            }
-        }
-    }
-
     private final OperatorContext operatorContext;
     private final PlanNodeId sourceId;
     private final ExchangeClient exchangeClient;
-    private final List<Type> types;
     private final PagesSerde serde;
+    private ListenableFuture<?> isBlocked = NOT_BLOCKED;
 
     public ExchangeOperator(
             OperatorContext operatorContext,
-            List<Type> types,
             PlanNodeId sourceId,
             PagesSerde serde,
             ExchangeClient exchangeClient)
@@ -144,7 +104,6 @@ public class ExchangeOperator
         this.sourceId = requireNonNull(sourceId, "sourceId is null");
         this.exchangeClient = requireNonNull(exchangeClient, "exchangeClient is null");
         this.serde = requireNonNull(serde, "serde is null");
-        this.types = requireNonNull(types, "types is null");
 
         operatorContext.setInfoSupplier(exchangeClient::getStatus);
     }
@@ -161,8 +120,8 @@ public class ExchangeOperator
         requireNonNull(split, "split is null");
         checkArgument(split.getConnectorId().equals(REMOTE_CONNECTOR_ID), "split is not a remote split");
 
-        URI location = ((RemoteSplit) split.getConnectorSplit()).getLocation();
-        exchangeClient.addLocation(location);
+        RemoteSplit remoteSplit = (RemoteSplit) split.getConnectorSplit();
+        exchangeClient.addLocation(remoteSplit.getLocation().toURI(), remoteSplit.getRemoteSourceTaskId());
 
         return Optional::empty;
     }
@@ -180,12 +139,6 @@ public class ExchangeOperator
     }
 
     @Override
-    public List<Type> getTypes()
-    {
-        return types;
-    }
-
-    @Override
     public void finish()
     {
         close();
@@ -200,11 +153,14 @@ public class ExchangeOperator
     @Override
     public ListenableFuture<?> isBlocked()
     {
-        ListenableFuture<?> blocked = exchangeClient.isBlocked();
-        if (blocked.isDone()) {
-            return NOT_BLOCKED;
+        // Avoid registering a new callback in the ExchangeClient when one is already pending
+        if (isBlocked.isDone()) {
+            isBlocked = exchangeClient.isBlocked();
+            if (isBlocked.isDone()) {
+                isBlocked = NOT_BLOCKED;
+            }
         }
-        return blocked;
+        return isBlocked;
     }
 
     @Override
@@ -227,8 +183,12 @@ public class ExchangeOperator
             return null;
         }
 
-        operatorContext.recordGeneratedInput(page.getSizeInBytes(), page.getPositionCount());
-        return serde.deserialize(page);
+        operatorContext.recordRawInput(page.getSizeInBytes(), page.getPositionCount());
+
+        Page deserializedPage = serde.deserialize(page);
+        operatorContext.recordProcessedInput(deserializedPage.getSizeInBytes(), page.getPositionCount());
+
+        return deserializedPage;
     }
 
     @Override
