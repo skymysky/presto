@@ -21,6 +21,7 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static java.util.Locale.ENGLISH;
 
 public class Identifier
         extends Expression
@@ -38,6 +39,10 @@ public class Identifier
     public Identifier(String value, boolean delimited)
     {
         this(Optional.empty(), value, delimited);
+    }
+    public Identifier(Optional<NodeLocation> location, String value)
+    {
+        this(location, value, !NAME_PATTERN.matcher(value).matches());
     }
 
     public Identifier(String value)
@@ -59,9 +64,23 @@ public class Identifier
         return value;
     }
 
+    public String getValueLowerCase()
+    {
+        return value.toLowerCase(ENGLISH);
+    }
+
     public boolean isDelimited()
     {
         return delimited;
+    }
+
+    public String getCanonicalValue()
+    {
+        if (isDelimited()) {
+            return value;
+        }
+
+        return value.toUpperCase(ENGLISH);
     }
 
     @Override

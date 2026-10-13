@@ -13,15 +13,16 @@
  */
 package com.facebook.presto.ml;
 
+import com.facebook.presto.common.type.ParametricType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.ml.type.ClassifierParametricType;
 import com.facebook.presto.spi.Plugin;
-import com.facebook.presto.spi.type.ParametricType;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 
 import java.util.Set;
 
+import static com.facebook.presto.ml.MLFeaturesFunctions.ML_FEATURE_FUNCTIONS;
 import static com.facebook.presto.ml.type.ModelType.MODEL;
 import static com.facebook.presto.ml.type.RegressorType.REGRESSOR;
 
@@ -52,7 +53,7 @@ public class MLPlugin
                 .add(LearnLibSvmRegressorAggregation.class)
                 .add(EvaluateClassifierPredictionsAggregation.class)
                 .add(MLFunctions.class)
-                .add(MLFeaturesFunctions.class)
+                .addAll(ML_FEATURE_FUNCTIONS)
                 .build();
     }
 }

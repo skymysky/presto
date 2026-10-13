@@ -13,6 +13,12 @@
  */
 package com.facebook.presto.tpcds;
 
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.DateType;
+import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.TimeType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorSession;
@@ -25,13 +31,7 @@ import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.statistics.TableStatistics;
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.DateType;
-import com.facebook.presto.spi.type.IntegerType;
-import com.facebook.presto.spi.type.TimeType;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.tpcds.statistics.TpcdsTableStatisticsFactory;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -45,9 +45,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-import static com.facebook.presto.spi.type.CharType.createCharType;
-import static com.facebook.presto.spi.type.DecimalType.createDecimalType;
-import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
+import static com.facebook.presto.common.type.CharType.createCharType;
+import static com.facebook.presto.common.type.DecimalType.createDecimalType;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
@@ -64,13 +64,16 @@ public class TpcdsMetadata
     private final Set<String> tableNames;
     private final TpcdsTableStatisticsFactory tpcdsTableStatisticsFactory = new TpcdsTableStatisticsFactory();
 
-    public TpcdsMetadata()
+    private final boolean useVarcharType;
+
+    public TpcdsMetadata(boolean useVarcharType)
     {
         ImmutableSet.Builder<String> tableNames = ImmutableSet.builder();
         for (Table tpcdsTable : Table.getBaseTables()) {
             tableNames.add(tpcdsTable.getName().toLowerCase(ENGLISH));
         }
         this.tableNames = tableNames.build();
+        this.useVarcharType = useVarcharType;
     }
 
     @Override
@@ -97,7 +100,7 @@ public class TpcdsMetadata
     }
 
     @Override
-    public List<ConnectorTableLayoutResult> getTableLayouts(
+    public ConnectorTableLayoutResult getTableLayoutForConstraint(
             ConnectorSession session,
             ConnectorTableHandle table,
             Constraint<ColumnHandle> constraint,
@@ -113,7 +116,7 @@ public class TpcdsMetadata
                 Optional.empty(),
                 ImmutableList.of());
 
-        return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
+        return new ConnectorTableLayoutResult(layout, constraint.getSummary());
     }
 
     @Override
@@ -121,8 +124,7 @@ public class TpcdsMetadata
     {
         TpcdsTableLayoutHandle layout = (TpcdsTableLayoutHandle) handle;
 
-        return getTableLayouts(session, layout.getTable(), Constraint.alwaysTrue(), Optional.empty())
-                .get(0)
+        return getTableLayoutForConstraint(session, layout.getTable(), Constraint.alwaysTrue(), Optional.empty())
                 .getTableLayout();
     }
 
@@ -134,28 +136,31 @@ public class TpcdsMetadata
         Table table = Table.getTable(tpcdsTableHandle.getTableName());
         String schemaName = scaleFactorSchemaName(tpcdsTableHandle.getScaleFactor());
 
-        return getTableMetadata(schemaName, table);
+        return getTableMetadata(session, schemaName, table, useVarcharType);
     }
 
-    private static ConnectorTableMetadata getTableMetadata(String schemaName, Table tpcdsTable)
+    private ConnectorTableMetadata getTableMetadata(ConnectorSession session, String schemaName, Table tpcdsTable, boolean useVarcharType)
     {
         ImmutableList.Builder<ColumnMetadata> columns = ImmutableList.builder();
         for (Column column : tpcdsTable.getColumns()) {
-            columns.add(new ColumnMetadata(column.getName(), getPrestoType(column.getType())));
+            columns.add(ColumnMetadata.builder()
+                    .setName(normalizeIdentifier(session, column.getName()))
+                    .setType(getPrestoType(column.getType(), useVarcharType))
+                    .build());
         }
         SchemaTableName tableName = new SchemaTableName(schemaName, tpcdsTable.getName());
         return new ConnectorTableMetadata(tableName, columns.build());
     }
 
     @Override
-    public TableStatistics getTableStatistics(ConnectorSession session, ConnectorTableHandle tableHandle, Constraint<ColumnHandle> constraint)
+    public TableStatistics getTableStatistics(ConnectorSession session, ConnectorTableHandle tableHandle, Optional<ConnectorTableLayoutHandle> tableLayoutHandle, List<ColumnHandle> columnHandles, Constraint<ColumnHandle> constraint)
     {
         TpcdsTableHandle tpcdsTableHandle = (TpcdsTableHandle) tableHandle;
 
         Table table = Table.getTable(tpcdsTableHandle.getTableName());
         String schemaName = scaleFactorSchemaName(tpcdsTableHandle.getScaleFactor());
 
-        return tpcdsTableStatisticsFactory.create(schemaName, table, getColumnHandles(session, tableHandle));
+        return tpcdsTableStatisticsFactory.create(schemaName, table, columnHandles);
     }
 
     @Override
@@ -186,10 +191,10 @@ public class TpcdsMetadata
     public Map<SchemaTableName, List<ColumnMetadata>> listTableColumns(ConnectorSession session, SchemaTablePrefix prefix)
     {
         ImmutableMap.Builder<SchemaTableName, List<ColumnMetadata>> tableColumns = ImmutableMap.builder();
-        for (String schemaName : getSchemaNames(session, prefix.getSchemaName())) {
+        for (String schemaName : getSchemaNames(session, Optional.ofNullable(prefix.getSchemaName()))) {
             for (Table tpcdsTable : Table.getBaseTables()) {
                 if (prefix.getTableName() == null || tpcdsTable.getName().equals(prefix.getTableName())) {
-                    ConnectorTableMetadata tableMetadata = getTableMetadata(schemaName, tpcdsTable);
+                    ConnectorTableMetadata tableMetadata = getTableMetadata(session, schemaName, tpcdsTable, useVarcharType);
                     tableColumns.put(new SchemaTableName(schemaName, tpcdsTable.getName()), tableMetadata.getColumns());
                 }
             }
@@ -198,10 +203,10 @@ public class TpcdsMetadata
     }
 
     @Override
-    public List<SchemaTableName> listTables(ConnectorSession session, String schemaNameOrNull)
+    public List<SchemaTableName> listTables(ConnectorSession session, Optional<String> filterSchema)
     {
         ImmutableList.Builder<SchemaTableName> builder = ImmutableList.builder();
-        for (String schemaName : getSchemaNames(session, schemaNameOrNull)) {
+        for (String schemaName : getSchemaNames(session, filterSchema)) {
             for (Table tpcdsTable : Table.getBaseTables()) {
                 builder.add(new SchemaTableName(schemaName, tpcdsTable.getName()));
             }
@@ -209,13 +214,13 @@ public class TpcdsMetadata
         return builder.build();
     }
 
-    private List<String> getSchemaNames(ConnectorSession session, String schemaNameOrNull)
+    private List<String> getSchemaNames(ConnectorSession session, Optional<String> schemaName)
     {
-        if (schemaNameOrNull == null) {
+        if (!schemaName.isPresent()) {
             return listSchemaNames(session);
         }
-        else if (schemaNameToScaleFactor(schemaNameOrNull) > 0) {
-            return ImmutableList.of(schemaNameOrNull);
+        if (schemaNameToScaleFactor(schemaName.get()) > 0) {
+            return ImmutableList.of(schemaName.get());
         }
         return ImmutableList.of();
     }
@@ -243,7 +248,7 @@ public class TpcdsMetadata
         }
     }
 
-    public static Type getPrestoType(ColumnType tpcdsType)
+    public static Type getPrestoType(ColumnType tpcdsType, boolean useVarcharType)
     {
         switch (tpcdsType.getBase()) {
             case IDENTIFIER:
@@ -255,6 +260,9 @@ public class TpcdsMetadata
             case DECIMAL:
                 return createDecimalType(tpcdsType.getPrecision().get(), tpcdsType.getScale().get());
             case CHAR:
+                if (useVarcharType) {
+                    return createVarcharType(tpcdsType.getPrecision().get());
+                }
                 return createCharType(tpcdsType.getPrecision().get());
             case VARCHAR:
                 return createVarcharType(tpcdsType.getPrecision().get());

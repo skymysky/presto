@@ -13,9 +13,11 @@
  */
 package com.facebook.presto.tpcds;
 
+import com.facebook.drift.codec.ThriftCodecManager;
 import com.facebook.presto.spi.ConnectorHandleResolver;
 import com.facebook.presto.spi.NodeManager;
 import com.facebook.presto.spi.connector.Connector;
+import com.facebook.presto.spi.connector.ConnectorCodecProvider;
 import com.facebook.presto.spi.connector.ConnectorContext;
 import com.facebook.presto.spi.connector.ConnectorFactory;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
@@ -24,6 +26,7 @@ import com.facebook.presto.spi.connector.ConnectorRecordSetProvider;
 import com.facebook.presto.spi.connector.ConnectorSplitManager;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.facebook.presto.spi.transaction.IsolationLevel;
+import com.facebook.presto.thrift.codec.ThriftCodecProvider;
 
 import java.util.Map;
 
@@ -61,9 +64,16 @@ public class TpcdsConnectorFactory
     }
 
     @Override
-    public Connector create(String connectorId, Map<String, String> config, ConnectorContext context)
+    public Connector create(String catalogName, Map<String, String> config, ConnectorContext context)
     {
         int splitsPerNode = getSplitsPerNode(config);
+        // The Java TPC-DS connector works with either char or varchar columns.
+        // However, native execution only supports varchar columns, hence in a native cluster `tpcds.use-varchar-type` must be true.
+        boolean useVarcharType = useVarcharType(config);
+        if (context.getConnectorSystemConfig().isNativeExecution() && !(useVarcharType)) {
+            throw new IllegalArgumentException("`tpcds.use-varchar-type` config property is not true for a native cluster");
+        }
+
         NodeManager nodeManager = context.getNodeManager();
         return new Connector()
         {
@@ -76,25 +86,35 @@ public class TpcdsConnectorFactory
             @Override
             public ConnectorMetadata getMetadata(ConnectorTransactionHandle transactionHandle)
             {
-                return new TpcdsMetadata();
+                return new TpcdsMetadata(useVarcharType);
             }
 
             @Override
             public ConnectorSplitManager getSplitManager()
             {
-                return new TpcdsSplitManager(nodeManager, splitsPerNode, isWithNoSexism(config));
+                return new TpcdsSplitManager(nodeManager, splitsPerNode, isWithNoSexism(config), context.getConnectorSystemConfig().isNativeExecution());
             }
 
             @Override
             public ConnectorRecordSetProvider getRecordSetProvider()
             {
-                return new TpcdsRecordSetProvider();
+                return new TpcdsRecordSetProvider(useVarcharType);
             }
 
             @Override
             public ConnectorNodePartitioningProvider getNodePartitioningProvider()
             {
                 return new TpcdsNodePartitioningProvider(nodeManager, splitsPerNode);
+            }
+
+            @Override
+            public ConnectorCodecProvider getConnectorCodecProvider()
+            {
+                return new ThriftCodecProvider.Builder().setThriftCodecManager(new ThriftCodecManager())
+                        .setConnectorSplitType(TpcdsSplit.class)
+                        .setConnectorTransactionHandle(TpcdsTransactionHandle.class)
+                        .setConnectorTableLayoutHandle(TpcdsTableLayoutHandle.class)
+                        .setConnectorTableHandle(TpcdsTableHandle.class).build();
             }
         };
     }
@@ -106,6 +126,16 @@ public class TpcdsConnectorFactory
         }
         catch (NumberFormatException e) {
             throw new IllegalArgumentException("Invalid property tpcds.splits-per-node");
+        }
+    }
+
+    private boolean useVarcharType(Map<String, String> properties)
+    {
+        try {
+            return parseBoolean(firstNonNull(properties.get("tpcds.use-varchar-type"), String.valueOf(false)));
+        }
+        catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid property tpcds.use-varchar-type");
         }
     }
 

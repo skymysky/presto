@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.plugin.memory;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
@@ -69,7 +69,18 @@ public final class MemoryColumnHandle
 
     public ColumnMetadata toColumnMetadata()
     {
-        return new ColumnMetadata(name, columnType);
+        return ColumnMetadata.builder()
+                .setName(name)
+                .setType(columnType)
+                .build();
+    }
+
+    public ColumnMetadata toColumnMetadata(String name)
+    {
+        return ColumnMetadata.builder()
+                .setName(name)
+                .setType(columnType)
+                .build();
     }
 
     @Override

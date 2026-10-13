@@ -14,16 +14,23 @@
 package com.facebook.presto.execution.resourceGroups;
 
 import com.facebook.presto.resourceGroups.ResourceGroupManagerPlugin;
+import com.facebook.presto.server.ResourceGroupInfo;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
-import com.facebook.presto.spi.resourceGroups.ResourceGroupInfo;
 import com.facebook.presto.tests.DistributedQueryRunner;
+import com.facebook.presto.tests.tpch.TpchQueryRunnerBuilder;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.tests.tpch.TpchQueryRunner.createQueryRunner;
-import static io.airlift.testing.Assertions.assertLessThan;
-import static io.airlift.units.Duration.nanosSince;
+import java.util.List;
+
+import static com.facebook.airlift.testing.Assertions.assertLessThan;
+import static com.facebook.airlift.units.Duration.nanosSince;
+import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
+import static com.facebook.presto.utils.ResourceUtils.getResourceFilePath;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNull;
+import static org.testng.Assert.assertTrue;
 
 public class TestResourceGroupIntegration
 {
@@ -31,9 +38,9 @@ public class TestResourceGroupIntegration
     public void testMemoryFraction()
             throws Exception
     {
-        try (DistributedQueryRunner queryRunner = createQueryRunner(ImmutableMap.of(), ImmutableMap.of("experimental.resource-groups-enabled", "true"))) {
+        try (DistributedQueryRunner queryRunner = TpchQueryRunnerBuilder.builder().build()) {
             queryRunner.installPlugin(new ResourceGroupManagerPlugin());
-            getResourceGroupManager(queryRunner).setConfigurationManager("file", ImmutableMap.of(
+            getResourceGroupManager(queryRunner).forceSetConfigurationManager("file", ImmutableMap.of(
                     "resource-groups.config-file", getResourceFilePath("resource_groups_memory_percentage.json")));
 
             queryRunner.execute("SELECT COUNT(*), clerk FROM orders GROUP BY clerk");
@@ -41,9 +48,24 @@ public class TestResourceGroupIntegration
         }
     }
 
-    private String getResourceFilePath(String fileName)
+    @Test
+    public void testPathToRoot()
+            throws Exception
     {
-        return this.getClass().getClassLoader().getResource(fileName).getPath();
+        try (DistributedQueryRunner queryRunner = TpchQueryRunnerBuilder.builder().build()) {
+            queryRunner.installPlugin(new ResourceGroupManagerPlugin());
+            InternalResourceGroupManager<?> manager = getResourceGroupManager(queryRunner);
+            manager.forceSetConfigurationManager("file", ImmutableMap.of(
+                    "resource-groups.config-file", getResourceFilePath("resource_groups_config_dashboard.json")));
+
+            queryRunner.execute(testSessionBuilder().setCatalog("tpch").setSchema("tiny").setSource("dashboard-foo").build(), "SELECT COUNT(*), clerk FROM orders GROUP BY clerk");
+            List<ResourceGroupInfo> path = manager.getPathToRoot(new ResourceGroupId(new ResourceGroupId(new ResourceGroupId("global"), "user-user"), "dashboard-user"));
+            assertEquals(path.size(), 3);
+            assertTrue(path.get(1).getSubGroups() != null);
+            assertEquals(path.get(2).getId(), new ResourceGroupId("global"));
+            assertEquals(path.get(2).getHardConcurrencyLimit(), 100);
+            assertNull(path.get(2).getRunningQueries());
+        }
     }
 
     public static void waitForGlobalResourceGroup(DistributedQueryRunner queryRunner)
@@ -52,7 +74,7 @@ public class TestResourceGroupIntegration
         long startTime = System.nanoTime();
         while (true) {
             SECONDS.sleep(1);
-            ResourceGroupInfo global = getResourceGroupManager(queryRunner).getResourceGroupInfo(new ResourceGroupId("global"));
+            ResourceGroupInfo global = getResourceGroupManager(queryRunner).getResourceGroupInfo(new ResourceGroupId("global"), true, true, true);
             if (global.getSoftMemoryLimit().toBytes() > 0) {
                 break;
             }
@@ -60,7 +82,7 @@ public class TestResourceGroupIntegration
         }
     }
 
-    private static InternalResourceGroupManager getResourceGroupManager(DistributedQueryRunner queryRunner)
+    private static InternalResourceGroupManager<?> getResourceGroupManager(DistributedQueryRunner queryRunner)
     {
         return queryRunner.getCoordinator().getResourceGroupManager()
                 .orElseThrow(() -> new IllegalArgumentException("no resource group manager"));

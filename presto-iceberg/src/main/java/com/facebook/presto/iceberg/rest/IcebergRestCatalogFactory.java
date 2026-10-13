@@ -1,0 +1,345 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.facebook.presto.iceberg.rest;
+
+import com.facebook.presto.hive.HdfsContext;
+import com.facebook.presto.hive.HdfsEnvironment;
+import com.facebook.presto.hive.NodeVersion;
+import com.facebook.presto.hive.azure.AzureConfigurationInitializer;
+import com.facebook.presto.hive.gcs.GcsConfigurationInitializer;
+import com.facebook.presto.hive.s3.S3ConfigurationUpdater;
+import com.facebook.presto.iceberg.IcebergCatalogName;
+import com.facebook.presto.iceberg.IcebergConfig;
+import com.facebook.presto.iceberg.IcebergNativeCatalogFactory;
+import com.facebook.presto.iceberg.ManifestFileCache;
+import com.facebook.presto.iceberg.PrestoRESTFileIO;
+import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.security.ConnectorIdentity;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.hash.Hasher;
+import com.google.common.util.concurrent.UncheckedExecutionException;
+import io.jsonwebtoken.Jwts;
+import jakarta.inject.Inject;
+import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.SessionCatalog.SessionContext;
+import org.apache.iceberg.rest.HTTPClient;
+
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ExecutionException;
+
+import static com.facebook.presto.iceberg.rest.AuthenticationType.BASIC;
+import static com.facebook.presto.iceberg.rest.AuthenticationType.OAUTH2;
+import static com.facebook.presto.iceberg.rest.PrestoRestTLSConfigurer.KEYSTORE_PASSWORD;
+import static com.facebook.presto.iceberg.rest.PrestoRestTLSConfigurer.KEYSTORE_PATH;
+import static com.facebook.presto.iceberg.rest.PrestoRestTLSConfigurer.TLS_CONFIGURER_IMPL;
+import static com.facebook.presto.iceberg.rest.PrestoRestTLSConfigurer.TRUSTSTORE_PASSWORD;
+import static com.facebook.presto.iceberg.rest.PrestoRestTLSConfigurer.TRUSTSTORE_PATH;
+import static com.facebook.presto.iceberg.rest.SessionType.USER;
+import static com.google.common.base.Throwables.throwIfInstanceOf;
+import static com.google.common.base.Throwables.throwIfUnchecked;
+import static com.google.common.hash.Hashing.sha256;
+import static java.lang.String.format;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Objects.requireNonNull;
+import static java.util.UUID.randomUUID;
+import static org.apache.iceberg.CatalogProperties.FILE_IO_IMPL;
+import static org.apache.iceberg.CatalogProperties.IO_MANIFEST_CACHE_ENABLED;
+import static org.apache.iceberg.CatalogProperties.IO_MANIFEST_CACHE_EXPIRATION_INTERVAL_MS;
+import static org.apache.iceberg.CatalogProperties.IO_MANIFEST_CACHE_MAX_CONTENT_LENGTH;
+import static org.apache.iceberg.CatalogProperties.IO_MANIFEST_CACHE_MAX_TOTAL_BYTES;
+import static org.apache.iceberg.CatalogProperties.URI;
+import static org.apache.iceberg.CatalogUtil.configureHadoopConf;
+import static org.apache.iceberg.rest.RESTUtil.configHeaders;
+import static org.apache.iceberg.rest.auth.AuthProperties.AUTH_TYPE;
+import static org.apache.iceberg.rest.auth.AuthProperties.AUTH_TYPE_BASIC;
+import static org.apache.iceberg.rest.auth.AuthProperties.BASIC_PASSWORD;
+import static org.apache.iceberg.rest.auth.AuthProperties.BASIC_USERNAME;
+import static org.apache.iceberg.rest.auth.OAuth2Properties.CREDENTIAL;
+import static org.apache.iceberg.rest.auth.OAuth2Properties.JWT_TOKEN_TYPE;
+import static org.apache.iceberg.rest.auth.OAuth2Properties.OAUTH2_SERVER_URI;
+import static org.apache.iceberg.rest.auth.OAuth2Properties.SCOPE;
+import static org.apache.iceberg.rest.auth.OAuth2Properties.TOKEN;
+
+public class IcebergRestCatalogFactory
+        extends IcebergNativeCatalogFactory
+{
+    // These keys mirror org.apache.iceberg.rest.HTTPClient's package-private REST_PROXY_* constants,
+    // which HTTPClient.Builder.build() reads to configure the Apache HttpClient proxy.
+    @VisibleForTesting
+    static final String REST_PROXY_HOSTNAME = "rest.client.proxy.hostname";
+    @VisibleForTesting
+    static final String REST_PROXY_PORT = "rest.client.proxy.port";
+    @VisibleForTesting
+    static final String REST_PROXY_USERNAME = "rest.client.proxy.username";
+    @VisibleForTesting
+    static final String REST_PROXY_PASSWORD = "rest.client.proxy.password";
+
+    private final IcebergRestConfig catalogConfig;
+    private final NodeVersion nodeVersion;
+    private final String catalogName;
+    private final boolean nestedNamespaceEnabled;
+    private final HdfsEnvironment hdfsEnvironment;
+    private final ManifestFileCache manifestFileCache;
+
+    @Inject
+    public IcebergRestCatalogFactory(
+            IcebergConfig config,
+            IcebergRestConfig catalogConfig,
+            IcebergCatalogName catalogName,
+            S3ConfigurationUpdater s3ConfigurationUpdater,
+            GcsConfigurationInitializer gcsConfigurationInitialize,
+            AzureConfigurationInitializer azureConfigurationInitialize,
+            NodeVersion nodeVersion,
+            HdfsEnvironment hdfsEnvironment,
+            ManifestFileCache manifestFileCache)
+    {
+        super(config, catalogName, s3ConfigurationUpdater, gcsConfigurationInitialize, azureConfigurationInitialize);
+        this.catalogConfig = requireNonNull(catalogConfig, "catalogConfig is null");
+        this.nodeVersion = requireNonNull(nodeVersion, "nodeVersion is null");
+        this.catalogName = requireNonNull(catalogName, "catalogName is null").getCatalogName();
+        this.nestedNamespaceEnabled = catalogConfig.isNestedNamespaceEnabled();
+        this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
+        this.manifestFileCache = requireNonNull(manifestFileCache, "manifestFileCache is null");
+    }
+
+    @Override
+    public Catalog getCatalog(ConnectorSession session)
+    {
+        try {
+            ConnectorIdentity catalogIdentity = session.getIdentity();
+            return catalogCache.get(getCacheKey(session), () -> {
+                PrestoRestCatalog catalog = new PrestoRestCatalog(
+                        convertSession(session),
+                        config -> HTTPClient.builder(config)
+                                .uri(config.get(URI))
+                                .withHeaders(configHeaders(config))
+                                .build(),
+                        (context, tableProperties) -> createFileIO(catalogIdentity, tableProperties));
+
+                configureHadoopConf(catalog, getHadoopConfiguration());
+                catalog.initialize(catalogName, getProperties(session));
+                return catalog;
+            });
+        }
+        catch (ExecutionException | UncheckedExecutionException e) {
+            throwIfInstanceOf(e.getCause(), PrestoException.class);
+            throwIfUnchecked(e);
+            throw new UncheckedExecutionException(e);
+        }
+    }
+
+    /**
+     * Builds the FileIO for a single table load, so it is never shared between identities. The
+     * identity is the one the catalog was created with, which is correct only because
+     * {@link #getCatalogCacheKey} includes it.
+     */
+    private PrestoRESTFileIO createFileIO(ConnectorIdentity identity, Map<String, String> tableProperties)
+    {
+        return new PrestoRESTFileIO(hdfsEnvironment, new HdfsContext(identity), manifestFileCache, tableProperties);
+    }
+
+    @Override
+    protected Map<String, String> getProperties(ConnectorSession session)
+    {
+        Map<String, String> properties = new HashMap<>(super.getProperties(session));
+        properties.remove(IO_MANIFEST_CACHE_ENABLED);
+        properties.remove(IO_MANIFEST_CACHE_MAX_TOTAL_BYTES);
+        properties.remove(IO_MANIFEST_CACHE_MAX_CONTENT_LENGTH);
+        properties.remove(IO_MANIFEST_CACHE_EXPIRATION_INTERVAL_MS);
+        properties.remove(FILE_IO_IMPL);
+        return properties;
+    }
+
+    @Override
+    protected Optional<String> getCatalogCacheKey(ConnectorSession session)
+    {
+        // The catalog fixes the identity used for every metadata read through its FileIO, so the
+        // identity is always part of the key, whatever the session type: extra cache entries are
+        // cheap, a leaked credential is not. Extra credentials are included because
+        // GcsConfigurationProvider takes its token from them. Deployments with many concurrent
+        // users may need a larger iceberg.catalog.cached-catalog-num.
+        ConnectorIdentity identity = session.getIdentity();
+        return Optional.of(identity.getUser() + "|" + extraCredentialsKey(identity));
+    }
+
+    private static String extraCredentialsKey(ConnectorIdentity identity)
+    {
+        Map<String, String> extraCredentials = identity.getExtraCredentials();
+        if (extraCredentials.isEmpty()) {
+            return "";
+        }
+        Hasher hasher = sha256().newHasher();
+        extraCredentials.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> hasher
+                        .putString(entry.getKey(), UTF_8)
+                        .putByte((byte) 0)
+                        .putString(entry.getValue(), UTF_8)
+                        .putByte((byte) 0));
+        return hasher.hash().toString();
+    }
+
+    @Override
+    protected Map<String, String> getCatalogProperties(ConnectorSession session)
+    {
+        ImmutableMap.Builder<String, String> properties = ImmutableMap.builder();
+
+        properties.put(URI, catalogConfig.getServerUri().orElseThrow(
+                () -> new IllegalStateException("iceberg.rest.uri must be set for REST catalog")));
+
+        if (catalogConfig.isTlsEnabled()) {
+            properties.put(TLS_CONFIGURER_IMPL, PrestoRestTLSConfigurer.class.getName());
+            catalogConfig.getKeystorePath().ifPresent(path -> properties.put(KEYSTORE_PATH, path));
+            catalogConfig.getKeystorePassword().ifPresent(password -> properties.put(KEYSTORE_PASSWORD, password));
+            catalogConfig.getTruststorePath().ifPresent(path -> properties.put(TRUSTSTORE_PATH, path));
+            catalogConfig.getTruststorePassword().ifPresent(password -> properties.put(TRUSTSTORE_PASSWORD, password));
+        }
+
+        catalogConfig.getAuthenticationType().ifPresent(type -> {
+            if (type == OAUTH2) {
+                // The oauth2/tokens endpoint of the REST catalog spec has been deprecated and will
+                // be removed in Iceberg 2.0 (https://github.com/apache/iceberg/pull/10603)
+                // TODO auth server URI will eventually need to be made a required property
+                catalogConfig.getAuthenticationServerUri().ifPresent(authServerUri -> properties.put(OAUTH2_SERVER_URI, authServerUri));
+
+                if (!catalogConfig.credentialOrTokenExists()) {
+                    throw new IllegalStateException("iceberg.rest.auth.oauth2 requires either a credential or a token");
+                }
+                catalogConfig.getCredential().ifPresent(credential -> properties.put(CREDENTIAL, credential));
+                catalogConfig.getToken().ifPresent(token -> properties.put(TOKEN, token));
+                catalogConfig.getScope().ifPresent(scope -> properties.put(SCOPE, scope));
+            }
+            if (type == BASIC) {
+                String basicAuthUsername = catalogConfig.getBasicAuthUsername().orElseThrow(
+                        () -> new IllegalStateException("iceberg.rest.auth.basic.username must be set for REST catalog when BASIC authentication is enabled"));
+                String basicAuthPassword = catalogConfig.getBasicAuthPassword().orElseThrow(
+                        () -> new IllegalStateException("iceberg.rest.auth.basic.password must be set for REST catalog when BASIC authentication is enabled"));
+                properties.put(AUTH_TYPE, AUTH_TYPE_BASIC);
+                properties.put(BASIC_USERNAME, basicAuthUsername);
+                properties.put(BASIC_PASSWORD, basicAuthPassword);
+            }
+        });
+
+        if (catalogConfig.isProxyEnabled()) {
+            properties.put(REST_PROXY_HOSTNAME, catalogConfig.getProxyHostname().get());
+            properties.put(REST_PROXY_PORT, String.valueOf(catalogConfig.getProxyPort().get()));
+            catalogConfig.getProxyUsername().ifPresent(username -> properties.put(REST_PROXY_USERNAME, username));
+            catalogConfig.getProxyPassword().ifPresent(password -> properties.put(REST_PROXY_PASSWORD, password));
+        }
+
+        catalogConfig.getSessionType().filter(type -> type.equals(USER))
+                .ifPresent(type -> properties.put(CatalogProperties.USER, session.getUser()));
+
+        return properties.build();
+    }
+
+    @Override
+    public boolean isNestedNamespaceEnabled()
+    {
+        return this.nestedNamespaceEnabled;
+    }
+
+    protected SessionContext convertSession(ConnectorSession session)
+    {
+        RestSessionBuilder sessionContextBuilder = catalogConfig.getSessionType()
+                .filter(type -> type.equals(USER))
+                .map(type -> {
+                    String sessionId = format("%s-%s", session.getUser(), session.getSource().orElse("default"));
+                    Map<String, String> properties = ImmutableMap.of(
+                            "user", session.getUser(),
+                            "source", session.getSource().orElse(""),
+                            "version", nodeVersion.toString());
+
+                    String jwt = Jwts.builder()
+                            .setSubject(session.getUser())
+                            .setIssuer(nodeVersion.toString())
+                            .setIssuedAt(new Date())
+                            .claim("user", session.getUser())
+                            .claim("source", session.getSource().orElse(""))
+                            .compact();
+
+                    ImmutableMap.Builder<String, String> credentials = ImmutableMap.builder();
+                    credentials.put(JWT_TOKEN_TYPE, jwt).putAll(session.getIdentity().getExtraCredentials());
+
+                    return builder(session).setSessionId(sessionId)
+                            .setIdentity(session.getUser())
+                            .setCredentials(credentials.build())
+                            .setProperties(properties);
+                }).orElseGet(() -> builder(session).setSessionId(randomUUID().toString()));
+        return sessionContextBuilder.build();
+    }
+
+    protected static class RestSessionBuilder
+    {
+        private String sessionId;
+        private String identity;
+        private Map<String, String> properties;
+        private Map<String, String> credentials;
+        private final ConnectorIdentity wrappedIdentity;
+
+        private RestSessionBuilder(ConnectorSession session)
+        {
+            sessionId = null;
+            identity = null;
+            credentials = null;
+            properties = ImmutableMap.of();
+            wrappedIdentity = session.getIdentity();
+        }
+
+        protected RestSessionBuilder setSessionId(String sessionId)
+        {
+            this.sessionId = sessionId;
+            return this;
+        }
+
+        protected RestSessionBuilder setIdentity(String identity)
+        {
+            this.identity = identity;
+            return this;
+        }
+
+        protected RestSessionBuilder setCredentials(Map<String, String> credentials)
+        {
+            this.credentials = credentials;
+            return this;
+        }
+
+        protected RestSessionBuilder setProperties(Map<String, String> properties)
+        {
+            this.properties = properties;
+            return this;
+        }
+
+        protected SessionContext build()
+        {
+            return new SessionContext(
+                    sessionId,
+                    identity,
+                    credentials,
+                    properties,
+                    wrappedIdentity);
+        }
+    }
+
+    protected static RestSessionBuilder builder(ConnectorSession session)
+    {
+        return new RestSessionBuilder(session);
+    }
+}

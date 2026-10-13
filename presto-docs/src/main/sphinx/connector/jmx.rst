@@ -6,7 +6,7 @@ The JMX connector provides the ability to query JMX information from all
 nodes in a Presto cluster. This is very useful for monitoring or debugging.
 Java Management Extensions (JMX) provides information about the Java
 Virtual Machine and all of the software running inside it. Presto itself
-is heavily instrumented via JMX.
+is heavily instrumented with JMX.
 
 This connector can also be configured so that chosen JMX information will
 be periodically dumped and stored in memory for later access.
@@ -41,16 +41,18 @@ Commas in MBean names should be escaped in the following manner:
 
     connector.name=jmx
     jmx.dump-tables=com.facebook.presto.memory:type=memorypool\\,name=general,\
-       com.facebook.presto.memory:type=memorypool\\,name=system,\
        com.facebook.presto.memory:type=memorypool\\,name=reserved
 
 Querying JMX
 ------------
 
-The JMX connector provides two schemas.
+The JMX connector provides three schemas: ``current``, ``history``, and ``information_schema``.
 
-The first one is ``current`` that contains every MBean from every node in the Presto
-cluster. You can see all of the available MBeans by running ``SHOW TABLES``::
+Current Schema
+^^^^^^^^^^^^^^
+
+The ``current`` schema contains every MBean from every node in the Presto
+cluster. To see all of the available MBeans, run ``SHOW TABLES``::
 
     SHOW TABLES FROM jmx.current;
 
@@ -81,6 +83,24 @@ for each node::
                          329 |                  10240
     (1 row)
 
+The wildcard character ``*`` may be used with table names in the ``current`` schema.
+This allows matching several MBean objects within a single query. The following query
+returns information from the different Presto memory pools on each node::
+
+    SELECT freebytes, node, object_name
+    FROM jmx.current."com.facebook.presto.memory:*type=memorypool*";
+
+.. code-block:: none
+
+     freebytes  |  node   |                       object_name
+    ------------+---------+----------------------------------------------------------
+      214748364 | example | com.facebook.presto.memory:type=MemoryPool,name=reserved
+     1073741825 | example | com.facebook.presto.memory:type=MemoryPool,name=general
+    (2 rows)
+
+History Schema
+^^^^^^^^^^^^^^
+
 The ``history`` schema contains the list of tables configured in the connector properties file.
 The tables have the same columns as those in the current schema, but with an additional
 timestamp column that stores the time at which the snapshot was taken::
@@ -95,3 +115,13 @@ timestamp column that stores the time at which the snapshot was taken::
      2016-01-28 10:19:00.000 |  21422
      2016-01-28 10:19:10.000 |  31412
     (3 rows)
+
+Information Schema
+^^^^^^^^^^^^^^^^^^
+
+The ``information_schema`` contains metadata about all the other schemas.
+To list all the available tables in this schema, run the following command:
+
+.. code-block:: sql
+
+    SHOW TABLES FROM jmx.information_schema;

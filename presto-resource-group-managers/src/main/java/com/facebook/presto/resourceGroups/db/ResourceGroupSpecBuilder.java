@@ -13,12 +13,14 @@
  */
 package com.facebook.presto.resourceGroups.db;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.resourceGroups.ResourceGroupNameTemplate;
 import com.facebook.presto.resourceGroups.ResourceGroupSpec;
+import com.facebook.presto.spi.resourceGroups.ResourceGroupQueryLimits;
 import com.google.common.collect.ImmutableList;
-import io.airlift.units.Duration;
-import org.skife.jdbi.v2.StatementContext;
-import org.skife.jdbi.v2.tweak.ResultSetMapper;
+import org.jdbi.v3.core.mapper.RowMapper;
+import org.jdbi.v3.core.statement.StatementContext;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -34,13 +36,13 @@ public class ResourceGroupSpecBuilder
     private final int maxQueued;
     private final Optional<Integer> softConcurrencyLimit;
     private final int hardConcurrencyLimit;
+    private final Optional<Integer> workersPerQueryLimit;
     private final Optional<String> schedulingPolicy;
     private final Optional<Integer> schedulingWeight;
     private final Optional<Boolean> jmxExport;
     private final Optional<Duration> softCpuLimit;
     private final Optional<Duration> hardCpuLimit;
-    private final Optional<Duration> queuedTimeLimit;
-    private final Optional<Duration> runningTimeLimit;
+    private final Optional<ResourceGroupQueryLimits> perQueryLimits;
     private final Optional<Long> parentId;
     private final ImmutableList.Builder<ResourceGroupSpec> subGroups = ImmutableList.builder();
 
@@ -56,8 +58,10 @@ public class ResourceGroupSpecBuilder
             Optional<Boolean> jmxExport,
             Optional<String> softCpuLimit,
             Optional<String> hardCpuLimit,
-            Optional<String> queuedTimeLimit,
-            Optional<String> runningTimeLimit,
+            Optional<String> perQueryExecutionTimeLimit,
+            Optional<String> perQueryTotalMemoryLimit,
+            Optional<String> perQueryCpuTimeLimit,
+            Optional<Integer> workersPerQueryLimit,
             Optional<Long> parentId)
     {
         this.id = id;
@@ -66,13 +70,16 @@ public class ResourceGroupSpecBuilder
         this.maxQueued = maxQueued;
         this.softConcurrencyLimit = requireNonNull(softConcurrencyLimit, "softConcurrencyLimit is null");
         this.hardConcurrencyLimit = hardConcurrencyLimit;
+        this.workersPerQueryLimit = workersPerQueryLimit;
         this.schedulingPolicy = requireNonNull(schedulingPolicy, "schedulingPolicy is null");
         this.schedulingWeight = schedulingWeight;
         this.jmxExport = requireNonNull(jmxExport, "jmxExport is null");
         this.softCpuLimit = requireNonNull(softCpuLimit, "softCpuLimit is null").map(Duration::valueOf);
         this.hardCpuLimit = requireNonNull(hardCpuLimit, "hardCpuLimit is null").map(Duration::valueOf);
-        this.queuedTimeLimit = requireNonNull(queuedTimeLimit, "queuedTimeLimit is null").map(Duration::valueOf);
-        this.runningTimeLimit = requireNonNull(runningTimeLimit, "runningTimeLimit is null").map(Duration::valueOf);
+        Optional<Duration> executionTimeLimit = requireNonNull(perQueryExecutionTimeLimit, "perQueryExecutionTimeLimit is null").map(Duration::valueOf);
+        Optional<DataSize> totalMemoryLimit = requireNonNull(perQueryTotalMemoryLimit, "perQueryTotalMemoryLimit is null").map(DataSize::valueOf);
+        Optional<Duration> cpuTimeLimit = requireNonNull(perQueryCpuTimeLimit, "perQueryCpuTimeLimit is null").map(Duration::valueOf);
+        this.perQueryLimits = Optional.of(new ResourceGroupQueryLimits(executionTimeLimit, totalMemoryLimit, cpuTimeLimit));
         this.parentId = parentId;
     }
 
@@ -121,15 +128,15 @@ public class ResourceGroupSpecBuilder
                 jmxExport,
                 softCpuLimit,
                 hardCpuLimit,
-                queuedTimeLimit,
-                runningTimeLimit);
+                perQueryLimits,
+                workersPerQueryLimit);
     }
 
     public static class Mapper
-            implements ResultSetMapper<ResourceGroupSpecBuilder>
+            implements RowMapper<ResourceGroupSpecBuilder>
     {
         @Override
-        public ResourceGroupSpecBuilder map(int index, ResultSet resultSet, StatementContext context)
+        public ResourceGroupSpecBuilder map(ResultSet resultSet, StatementContext context)
                 throws SQLException
         {
             long id = resultSet.getLong("resource_group_id");
@@ -146,18 +153,24 @@ public class ResourceGroupSpecBuilder
             if (resultSet.wasNull()) {
                 schedulingWeight = Optional.empty();
             }
+            Optional<Integer> workersPerQueryLimit = Optional.of(resultSet.getInt("workers_per_query_limit"));
+            if (resultSet.wasNull()) {
+                workersPerQueryLimit = Optional.empty();
+            }
+
             Optional<Boolean> jmxExport = Optional.of(resultSet.getBoolean("jmx_export"));
             if (resultSet.wasNull()) {
                 jmxExport = Optional.empty();
             }
             Optional<String> softCpuLimit = Optional.ofNullable(resultSet.getString("soft_cpu_limit"));
             Optional<String> hardCpuLimit = Optional.ofNullable(resultSet.getString("hard_cpu_limit"));
+            Optional<String> perQueryExecutionTimeLimit = Optional.ofNullable(resultSet.getString("per_query_execution_time_limit"));
+            Optional<String> perQueryTotalMemoryLimit = Optional.ofNullable(resultSet.getString("per_query_total_memory_limit"));
+            Optional<String> perQueryCpuTimeLimit = Optional.ofNullable(resultSet.getString("per_query_cpu_time_limit"));
             Optional<Long> parentId = Optional.of(resultSet.getLong("parent"));
             if (resultSet.wasNull()) {
                 parentId = Optional.empty();
             }
-            Optional<String> queuedTimeLimit = Optional.ofNullable(resultSet.getString("queued_time_limit"));
-            Optional<String> runningTimeLimit = Optional.ofNullable(resultSet.getString("running_time_limit"));
             return new ResourceGroupSpecBuilder(
                     id,
                     nameTemplate,
@@ -170,8 +183,10 @@ public class ResourceGroupSpecBuilder
                     jmxExport,
                     softCpuLimit,
                     hardCpuLimit,
-                    queuedTimeLimit,
-                    runningTimeLimit,
+                    perQueryExecutionTimeLimit,
+                    perQueryTotalMemoryLimit,
+                    perQueryCpuTimeLimit,
+                    workersPerQueryLimit,
                     parentId);
         }
     }

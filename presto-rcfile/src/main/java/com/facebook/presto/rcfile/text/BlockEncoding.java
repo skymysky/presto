@@ -13,13 +13,12 @@
  */
 package com.facebook.presto.rcfile.text;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.rcfile.ColumnData;
 import com.facebook.presto.rcfile.EncodeOutput;
 import com.facebook.presto.rcfile.RcFileCorruptionException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 
@@ -61,7 +60,7 @@ public abstract class BlockEncoding
         int size = columnData.rowCount();
 
         Slice slice = columnData.getSlice();
-        BlockBuilder builder = type.createBlockBuilder(new BlockBuilderStatus(), size);
+        BlockBuilder builder = type.createBlockBuilder(null, size);
         for (int i = 0; i < size; i++) {
             int length = columnData.getLength(i);
             int offset = columnData.getOffset(i);

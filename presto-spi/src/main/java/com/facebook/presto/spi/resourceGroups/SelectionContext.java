@@ -13,49 +13,42 @@
  */
 package com.facebook.presto.spi.resourceGroups;
 
-import java.util.Optional;
+import java.util.OptionalInt;
 
 import static java.util.Objects.requireNonNull;
 
-public final class SelectionContext
+public final class SelectionContext<T>
 {
-    private final boolean authenticated;
-    private final String user;
-    private final Optional<String> source;
-    private final int queryPriority;
-    private final Optional<String> queryType;
+    private final ResourceGroupId resourceGroupId;
+    private final T context;
+    private final OptionalInt firstDynamicSegmentPosition;
 
-    public SelectionContext(boolean authenticated, String user, Optional<String> source, int queryPriority, Optional<String> queryType)
+    public SelectionContext(ResourceGroupId resourceGroupId, T context, OptionalInt firstDynamicSegmentPosition)
     {
-        this.authenticated = authenticated;
-        this.user = requireNonNull(user, "user is null");
-        this.source = requireNonNull(source, "source is null");
-        this.queryPriority = queryPriority;
-        this.queryType = requireNonNull(queryType, "queryType is null");
+        this.resourceGroupId = requireNonNull(resourceGroupId, "resourceGroupId is null");
+        this.context = requireNonNull(context, "context is null");
+        this.firstDynamicSegmentPosition = requireNonNull(firstDynamicSegmentPosition, "firstDynamicSegmentPosition is null");
     }
 
-    public boolean isAuthenticated()
+    public SelectionContext(ResourceGroupId resourceGroupId, T context)
     {
-        return authenticated;
+        this.resourceGroupId = requireNonNull(resourceGroupId, "resourceGroupId is null");
+        this.context = requireNonNull(context, "context is null");
+        this.firstDynamicSegmentPosition = OptionalInt.empty();
     }
 
-    public String getUser()
+    public ResourceGroupId getResourceGroupId()
     {
-        return user;
+        return resourceGroupId;
     }
 
-    public Optional<String> getSource()
+    public T getContext()
     {
-        return source;
+        return context;
     }
 
-    public int getQueryPriority()
+    public OptionalInt getFirstDynamicSegmentPosition()
     {
-        return queryPriority;
-    }
-
-    public Optional<String> getQueryType()
-    {
-        return queryType;
+        return firstDynamicSegmentPosition;
     }
 }

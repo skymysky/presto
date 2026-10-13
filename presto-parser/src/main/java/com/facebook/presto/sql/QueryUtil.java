@@ -17,12 +17,13 @@ import com.facebook.presto.sql.tree.AliasedRelation;
 import com.facebook.presto.sql.tree.AllColumns;
 import com.facebook.presto.sql.tree.CoalesceExpression;
 import com.facebook.presto.sql.tree.ComparisonExpression;
-import com.facebook.presto.sql.tree.ComparisonExpressionType;
+import com.facebook.presto.sql.tree.DereferenceExpression;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.FunctionCall;
 import com.facebook.presto.sql.tree.GroupBy;
 import com.facebook.presto.sql.tree.Identifier;
 import com.facebook.presto.sql.tree.LogicalBinaryExpression;
+import com.facebook.presto.sql.tree.Offset;
 import com.facebook.presto.sql.tree.OrderBy;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.Query;
@@ -40,6 +41,7 @@ import com.facebook.presto.sql.tree.Table;
 import com.facebook.presto.sql.tree.TableSubquery;
 import com.facebook.presto.sql.tree.Values;
 import com.facebook.presto.sql.tree.WhenClause;
+import com.facebook.presto.sql.tree.WindowDefinition;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -48,6 +50,7 @@ import java.util.stream.Collectors;
 
 import static com.facebook.presto.sql.tree.BooleanLiteral.FALSE_LITERAL;
 import static com.facebook.presto.sql.tree.BooleanLiteral.TRUE_LITERAL;
+import static java.util.Arrays.asList;
 
 public final class QueryUtil
 {
@@ -63,6 +66,11 @@ public final class QueryUtil
         return new Identifier(name, true);
     }
 
+    public static Expression nameReference(String first, String... rest)
+    {
+        return DereferenceExpression.from(QualifiedName.of(first, rest));
+    }
+
     public static SelectItem unaliasedName(String name)
     {
         return new SingleColumn(identifier(name));
@@ -74,6 +82,11 @@ public final class QueryUtil
     }
 
     public static Select selectList(Expression... expressions)
+    {
+        return selectList(asList(expressions));
+    }
+
+    public static Select selectList(List<Expression> expressions)
     {
         ImmutableList.Builder<SelectItem> items = ImmutableList.builder();
         for (Expression expression : expressions) {
@@ -107,14 +120,19 @@ public final class QueryUtil
         return new SortItem(identifier(name), SortItem.Ordering.ASCENDING, SortItem.NullOrdering.UNDEFINED);
     }
 
+    public static SortItem descending(String name)
+    {
+        return new SortItem(identifier(name), SortItem.Ordering.DESCENDING, SortItem.NullOrdering.UNDEFINED);
+    }
+
     public static Expression logicalAnd(Expression left, Expression right)
     {
-        return new LogicalBinaryExpression(LogicalBinaryExpression.Type.AND, left, right);
+        return new LogicalBinaryExpression(LogicalBinaryExpression.Operator.AND, left, right);
     }
 
     public static Expression equal(Expression left, Expression right)
     {
-        return new ComparisonExpression(ComparisonExpressionType.EQUAL, left, right);
+        return new ComparisonExpression(ComparisonExpression.Operator.EQUAL, left, right);
     }
 
     public static Expression caseWhen(Expression operand, Expression result)
@@ -134,7 +152,12 @@ public final class QueryUtil
 
     public static Row row(Expression... values)
     {
-        return new Row(ImmutableList.copyOf(values));
+        return Row.unnamed(ImmutableList.copyOf(values));
+    }
+
+    public static Relation aliased(Relation relation, String alias)
+    {
+        return new AliasedRelation(relation, identifier(alias), null);
     }
 
     public static Relation aliased(Relation relation, String alias, List<String> columnAliases)
@@ -165,6 +188,8 @@ public final class QueryUtil
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
+                ImmutableList.of(),
+                Optional.empty(),
                 Optional.empty(),
                 Optional.empty()));
     }
@@ -191,10 +216,24 @@ public final class QueryUtil
 
     public static Query simpleQuery(Select select, Relation from, Optional<Expression> where, Optional<OrderBy> orderBy)
     {
-        return simpleQuery(select, from, where, Optional.empty(), Optional.empty(), orderBy, Optional.empty());
+        return simpleQuery(select, from, where, Optional.empty(), Optional.empty(), orderBy, Optional.empty(), Optional.empty());
     }
 
-    public static Query simpleQuery(Select select, Relation from, Optional<Expression> where, Optional<GroupBy> groupBy, Optional<Expression> having, Optional<OrderBy> orderBy, Optional<String> limit)
+    public static Query simpleQuery(Select select, Relation from, Optional<Expression> where, Optional<GroupBy> groupBy, Optional<Expression> having, Optional<OrderBy> orderBy, Optional<Offset> offset, Optional<String> limit)
+    {
+        return simpleQuery(select, from, where, groupBy, having, ImmutableList.of(), orderBy, offset, limit);
+    }
+
+    public static Query simpleQuery(
+            Select select,
+            Relation from,
+            Optional<Expression> where,
+            Optional<GroupBy> groupBy,
+            Optional<Expression> having,
+            List<WindowDefinition> windows,
+            Optional<OrderBy> orderBy,
+            Optional<Offset> offset,
+            Optional<String> limit)
     {
         return query(new QuerySpecification(
                 select,
@@ -202,7 +241,9 @@ public final class QueryUtil
                 where,
                 groupBy,
                 having,
+                windows,
                 orderBy,
+                offset,
                 limit));
     }
 
@@ -227,6 +268,7 @@ public final class QueryUtil
         return new Query(
                 Optional.empty(),
                 body,
+                Optional.empty(),
                 Optional.empty(),
                 Optional.empty());
     }

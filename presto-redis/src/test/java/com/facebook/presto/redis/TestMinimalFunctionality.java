@@ -14,16 +14,15 @@
 package com.facebook.presto.redis;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.metadata.QualifiedObjectName;
-import com.facebook.presto.metadata.TableHandle;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.BigintType;
 import com.facebook.presto.redis.util.EmbeddedRedis;
 import com.facebook.presto.redis.util.JsonEncoder;
-import com.facebook.presto.security.AllowAllAccessControl;
 import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.spi.type.BigintType;
+import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.security.AllowAllAccessControl;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.tests.StandaloneQueryRunner;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.AfterMethod;
@@ -35,7 +34,7 @@ import redis.clients.jedis.Jedis;
 import java.util.Optional;
 import java.util.UUID;
 
-import static com.facebook.presto.redis.util.RedisTestUtils.createEmptyTableDescription;
+import static com.facebook.presto.redis.util.RedisTestUtils.createEmptyTableDescriptions;
 import static com.facebook.presto.redis.util.RedisTestUtils.installRedisPlugin;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
@@ -64,9 +63,9 @@ public class TestMinimalFunctionality
 
     @AfterClass(alwaysRun = true)
     public void stopRedis()
-            throws Exception
     {
         embeddedRedis.close();
+        embeddedRedis = null;
     }
 
     @BeforeMethod
@@ -77,53 +76,46 @@ public class TestMinimalFunctionality
 
         this.queryRunner = new StandaloneQueryRunner(SESSION);
 
-        installRedisPlugin(embeddedRedis, queryRunner,
+        installRedisPlugin(
+                embeddedRedis,
+                queryRunner,
                 ImmutableMap.<SchemaTableName, RedisTableDescription>builder()
-                        .put(createEmptyTableDescription(new SchemaTableName("default", tableName)))
-                        .build());
+                        .putAll(createEmptyTableDescriptions(
+                                new SchemaTableName("default", tableName))).build(), ImmutableMap.of());
     }
 
-    @AfterMethod
+    @AfterMethod(alwaysRun = true)
     public void tearDown()
-            throws Exception
     {
         queryRunner.close();
+        queryRunner = null;
     }
 
     private void populateData(int count)
     {
         JsonEncoder jsonEncoder = new JsonEncoder();
-        try {
-            for (long i = 0; i < count; i++) {
-                Object value = ImmutableMap.of("id", Long.toString(i), "value", UUID.randomUUID().toString());
-
-                try (Jedis jedis = embeddedRedis.getJedisPool().getResource()) {
-                    jedis.set(tableName + ":" + i,
-                            jsonEncoder.toString(value));
-                }
+        for (long i = 0; i < count; i++) {
+            Object value = ImmutableMap.of("id", Long.toString(i), "value", UUID.randomUUID().toString());
+            try (Jedis jedis = embeddedRedis.getJedisPool().getResource()) {
+                jedis.set(tableName + ":" + i, jsonEncoder.toString(value));
             }
-        }
-        catch (Exception e) {
-            throw Throwables.propagate(e);
         }
     }
 
     @Test
     public void testTableExists()
-            throws Exception
     {
         QualifiedObjectName name = new QualifiedObjectName("redis", "default", tableName);
         transaction(queryRunner.getTransactionManager(), new AllowAllAccessControl())
                 .singleStatement()
                 .execute(SESSION, session -> {
-                    Optional<TableHandle> handle = queryRunner.getServer().getMetadata().getTableHandle(session, name);
+                    Optional<TableHandle> handle = queryRunner.getServer().getMetadata().getMetadataResolver(session).getTableHandle(name);
                     assertTrue(handle.isPresent());
                 });
     }
 
     @Test
     public void testTableHasData()
-            throws Exception
     {
         MaterializedResult result = queryRunner.execute("SELECT count(1) from " + tableName);
 

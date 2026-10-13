@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.orc;
 
-import com.google.common.collect.ImmutableList;
+import com.facebook.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 import io.airlift.slice.Slices;
@@ -36,10 +36,10 @@ import static java.lang.Math.multiplyExact;
 import static java.lang.Math.toIntExact;
 
 public final class ChunkedSliceOutput
-        extends SliceOutput
+        extends SliceOutput implements OrcChunkedOutputBuffer
 {
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(ChunkedSliceOutput.class).instanceSize();
-    private static final int MINIMUM_CHUNK_SIZE = 4096;
+    private static final int MINIMUM_CHUNK_SIZE = 256;
     private static final int MAXIMUM_CHUNK_SIZE = 16 * 1024 * 1024;
     // This must not be larger than MINIMUM_CHUNK_SIZE/2
     private static final int MAX_UNUSED_BUFFER_SIZE = 128;
@@ -62,20 +62,20 @@ public final class ChunkedSliceOutput
      */
     private int bufferPosition;
 
-    public ChunkedSliceOutput(int minChunkSize, int maxChunkSize)
+    public ChunkedSliceOutput(int minChunkSize, int maxChunkSize, boolean resetOutputBuffer)
     {
-        this.chunkSupplier = new ChunkSupplier(minChunkSize, maxChunkSize);
+        this.chunkSupplier = new ChunkSupplier(minChunkSize, maxChunkSize, resetOutputBuffer);
 
         this.buffer = chunkSupplier.get();
         this.slice = Slices.wrappedBuffer(buffer);
     }
 
-    public List<Slice> getSlices()
+    public void writeTo(SliceOutput outputStream)
     {
-        return ImmutableList.<Slice>builder()
-                .addAll(closedSlices)
-                .add(Slices.copyOf(slice, 0, bufferPosition))
-                .build();
+        closedSlices.forEach(outputStream::writeBytes);
+        if (bufferPosition > 0) {
+            outputStream.writeBytes(slice, 0, bufferPosition);
+        }
     }
 
     @Override
@@ -203,6 +203,20 @@ public final class ChunkedSliceOutput
     }
 
     @Override
+    public void ensureAvailable(int minLength, int length)
+    {
+        ensureWritableBytes(minLength);
+    }
+
+    @Override
+    public void writeHeader(int header)
+    {
+        write(header & 0x00_00FF);
+        write((header & 0x00_FF00) >> 8);
+        write((header & 0xFF_0000) >> 16);
+    }
+
+    @Override
     public void writeBytes(InputStream in, int length)
             throws IOException
     {
@@ -304,9 +318,9 @@ public final class ChunkedSliceOutput
     @Override
     public String toString()
     {
-        StringBuilder builder = new StringBuilder("OutputStreamSliceOutputAdapter{");
+        StringBuilder builder = new StringBuilder("ChunkedSliceOutput{");
         builder.append("position=").append(size());
-        builder.append("bufferSize=").append(slice.length());
+        builder.append(", bufferSize=").append(slice.length());
         builder.append('}');
         return builder.toString();
     }
@@ -329,6 +343,7 @@ public final class ChunkedSliceOutput
     {
         // add trimmed view of slice to closed slices
         closedSlices.add(slice.slice(0, bufferPosition));
+        closedSlicesRetainedSize += slice.getRetainedSize();
 
         // create a new buffer
         // double size until we hit the max chunk size
@@ -344,14 +359,16 @@ public final class ChunkedSliceOutput
     // reusing the buffers.
     private static class ChunkSupplier
     {
+        private static final Logger log = Logger.get(ChunkSupplier.class);
         private final int maxChunkSize;
+        private boolean resetOutputBuffer;
 
         private final List<byte[]> bufferPool = new ArrayList<>();
         private final List<byte[]> usedBuffers = new ArrayList<>();
 
         private int currentSize;
 
-        public ChunkSupplier(int minChunkSize, int maxChunkSize)
+        public ChunkSupplier(int minChunkSize, int maxChunkSize, boolean resetOutputBuffer)
         {
             checkArgument(minChunkSize >= MINIMUM_CHUNK_SIZE, "minimum chunk size of " + MINIMUM_CHUNK_SIZE + " required");
             checkArgument(maxChunkSize <= MAXIMUM_CHUNK_SIZE, "maximum chunk size of " + MAXIMUM_CHUNK_SIZE + " required");
@@ -359,10 +376,20 @@ public final class ChunkedSliceOutput
 
             this.currentSize = minChunkSize;
             this.maxChunkSize = maxChunkSize;
+            this.resetOutputBuffer = resetOutputBuffer;
         }
 
         public void reset()
         {
+            if (!bufferPool.isEmpty() && resetOutputBuffer) {
+                log.info("Reset unused buffers, used %d chunks (%d bytes), unused %d chunks (%d bytes)",
+                        usedBuffers.size(),
+                        usedBuffers.stream().mapToInt(b -> b.length).sum(),
+                        bufferPool.size(),
+                        bufferPool.stream().mapToInt(b -> b.length).sum());
+                bufferPool.clear();
+                System.setProperty("RESET_OUTPUT_BUFFER", "RESET_OUTPUT_BUFFER");
+            }
             bufferPool.addAll(0, usedBuffers);
             usedBuffers.clear();
         }
@@ -371,8 +398,8 @@ public final class ChunkedSliceOutput
         {
             byte[] buffer;
             if (bufferPool.isEmpty()) {
-                currentSize = min(multiplyExact(currentSize, 2), maxChunkSize);
                 buffer = new byte[currentSize];
+                currentSize = min(multiplyExact(currentSize, 2), maxChunkSize);
             }
             else {
                 buffer = bufferPool.remove(0);

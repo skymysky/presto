@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.spi.resourceGroups;
 
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 
 public interface ResourceGroup
 {
@@ -96,11 +96,20 @@ public interface ResourceGroup
      */
     void setJmxExport(boolean export);
 
-    Duration getQueuedTimeLimit();
+    ResourceGroupQueryLimits getPerQueryLimits();
 
-    void setQueuedTimeLimit(Duration queuedTimeLimit);
+    /**
+     * The maximum resources a query can consume before being killed.
+     */
+    void setPerQueryLimits(ResourceGroupQueryLimits perQueryLimits);
 
-    Duration getRunningTimeLimit();
+    /**
+     * Number of workers each query needs. This is equivalent to the concurrency limits:
+     * let's say we have 600 workers and hard concurrency limit is 100. Workers per query
+     * limit equal to 6 would be roughly equivalent. This is intended to be used in clusters
+     * using elastic compute.
+     */
+    public int getWorkersPerQueryLimit();
 
-    void setRunningTimeLimit(Duration runningTimeLimit);
+    public void setWorkersPerQueryLimit(int workersPerQueryLimit);
 }

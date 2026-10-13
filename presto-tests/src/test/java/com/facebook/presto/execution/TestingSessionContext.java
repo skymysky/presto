@@ -14,10 +14,15 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.connector.ConnectorId;
+import com.facebook.presto.common.RuntimeStats;
+import com.facebook.presto.common.transaction.TransactionId;
 import com.facebook.presto.server.SessionContext;
+import com.facebook.presto.spi.ConnectorId;
+import com.facebook.presto.spi.function.SqlFunctionId;
+import com.facebook.presto.spi.function.SqlInvokedFunction;
 import com.facebook.presto.spi.security.Identity;
-import com.facebook.presto.transaction.TransactionId;
+import com.facebook.presto.spi.session.ResourceEstimates;
+import com.facebook.presto.spi.tracing.Tracer;
 import com.google.common.collect.ImmutableMap;
 
 import java.util.Map;
@@ -56,9 +61,21 @@ public class TestingSessionContext
     }
 
     @Override
+    public String getSqlText()
+    {
+        return session.getAccessControlContext().getSqlText().orElse("");
+    }
+
+    @Override
     public String getSource()
     {
         return session.getSource().orElse(null);
+    }
+
+    @Override
+    public Optional<String> getTraceToken()
+    {
+        return session.getTraceToken();
     }
 
     @Override
@@ -86,6 +103,12 @@ public class TestingSessionContext
     }
 
     @Override
+    public ResourceEstimates getResourceEstimates()
+    {
+        return session.getResourceEstimates();
+    }
+
+    @Override
     public String getTimeZoneId()
     {
         return session.getTimeZoneKey().getId();
@@ -95,6 +118,12 @@ public class TestingSessionContext
     public String getLanguage()
     {
         return session.getLocale().getLanguage();
+    }
+
+    @Override
+    public Optional<Tracer> getTracer()
+    {
+        return session.getTracer();
     }
 
     @Override
@@ -129,5 +158,17 @@ public class TestingSessionContext
     public boolean supportClientTransaction()
     {
         return session.isClientTransactionSupport();
+    }
+
+    @Override
+    public Map<SqlFunctionId, SqlInvokedFunction> getSessionFunctions()
+    {
+        return session.getSessionFunctions();
+    }
+
+    @Override
+    public RuntimeStats getRuntimeStats()
+    {
+        return session.getRuntimeStats();
     }
 }

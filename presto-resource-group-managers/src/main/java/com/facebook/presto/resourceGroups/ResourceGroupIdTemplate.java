@@ -14,7 +14,6 @@
 package com.facebook.presto.resourceGroups;
 
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
-import com.facebook.presto.spi.resourceGroups.SelectionContext;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
@@ -22,9 +21,13 @@ import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalInt;
+import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -52,7 +55,7 @@ public class ResourceGroupIdTemplate
         return new ResourceGroupIdTemplate(String.join(".", segments.stream().map(ResourceGroupNameTemplate::toString).collect(Collectors.toList())));
     }
 
-    public ResourceGroupId expandTemplate(SelectionContext context)
+    public ResourceGroupId expandTemplate(VariableMap context)
     {
         ResourceGroupId id = null;
         for (ResourceGroupNameTemplate segment : segments) {
@@ -67,9 +70,23 @@ public class ResourceGroupIdTemplate
         return id;
     }
 
+    public OptionalInt getFirstDynamicSegment()
+    {
+        return IntStream.range(0, segments.size())
+                .filter(i -> segments.get(i).hasVariables())
+                .findFirst();
+    }
+
     public List<ResourceGroupNameTemplate> getSegments()
     {
         return ImmutableList.copyOf(segments);
+    }
+
+    public Set<String> getVariableNames()
+    {
+        return segments.stream()
+                .flatMap(s -> s.getVariableNames().stream())
+                .collect(toImmutableSet());
     }
 
     @Override

@@ -13,14 +13,15 @@
  */
 package com.facebook.presto.orc.stream;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.orc.ColumnWriterOptions;
+import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.OrcOutputBuffer;
 import com.facebook.presto.orc.checkpoint.ByteArrayStreamCheckpoint;
-import com.facebook.presto.orc.metadata.CompressionKind;
 import com.facebook.presto.orc.metadata.Stream;
 import com.facebook.presto.orc.metadata.Stream.StreamKind;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
-import io.airlift.slice.SliceOutput;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.util.ArrayList;
@@ -29,6 +30,7 @@ import java.util.Optional;
 
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
 import static com.google.common.base.Preconditions.checkState;
+import static java.lang.Math.toIntExact;
 
 /**
  * This is a concatenation of all byte array content, and a separate length stream will be used to get the boundaries.
@@ -43,14 +45,14 @@ public class ByteArrayOutputStream
 
     private boolean closed;
 
-    public ByteArrayOutputStream(CompressionKind compression, int bufferSize)
+    public ByteArrayOutputStream(ColumnWriterOptions columnWriterOptions, Optional<DwrfDataEncryptor> dwrfEncryptor)
     {
-        this(compression, bufferSize, DATA);
+        this(columnWriterOptions, dwrfEncryptor, DATA);
     }
 
-    public ByteArrayOutputStream(CompressionKind compression, int bufferSize, StreamKind streamKind)
+    public ByteArrayOutputStream(ColumnWriterOptions columnWriterOptions, Optional<DwrfDataEncryptor> dwrfEncryptor, StreamKind streamKind)
     {
-        this.buffer = new OrcOutputBuffer(compression, bufferSize);
+        this.buffer = new OrcOutputBuffer(columnWriterOptions, dwrfEncryptor);
         this.streamKind = streamKind;
     }
 
@@ -60,10 +62,23 @@ public class ByteArrayOutputStream
         buffer.writeBytes(value);
     }
 
+    public void writeSlice(Slice slice, int sourceIndex, int length)
+    {
+        checkState(!closed);
+        buffer.writeBytes(slice, sourceIndex, length);
+    }
+
+    public void writeBlockPosition(Block block, int position, int offset, int length)
+    {
+        checkState(!closed);
+        block.writeBytesTo(position, offset, length, buffer);
+    }
+
     @Override
     public void close()
     {
         closed = true;
+        buffer.close();
     }
 
     @Override
@@ -81,17 +96,15 @@ public class ByteArrayOutputStream
     }
 
     @Override
-    public Optional<Stream> writeDataStreams(int column, SliceOutput outputStream)
+    public StreamDataOutput getStreamDataOutput(int column, int sequence)
     {
-        checkState(closed);
-        int length = buffer.writeDataTo(outputStream);
-        return Optional.of(new Stream(column, streamKind, length, false));
+        return new StreamDataOutput(buffer::writeDataTo, new Stream(column, sequence, streamKind, toIntExact(buffer.getOutputDataSize()), false));
     }
 
     @Override
     public long getBufferedBytes()
     {
-        return buffer.size();
+        return buffer.estimateOutputDataSize();
     }
 
     @Override

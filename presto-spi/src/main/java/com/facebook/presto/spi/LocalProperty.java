@@ -16,7 +16,7 @@ package com.facebook.presto.spi;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
@@ -44,11 +44,11 @@ public interface LocalProperty<E>
     boolean isSimplifiedBy(LocalProperty<E> actual);
 
     /**
-     * Simplfies this LocalProperty provided that the specified inputs are constants
+     * Simplifies this LocalProperty provided that the specified inputs are constants
      */
     default Optional<LocalProperty<E>> withConstants(Set<E> constants)
     {
-        Set<E> set = new HashSet<>(getColumns());
+        Set<E> set = new LinkedHashSet<>(getColumns());
         set.removeAll(constants);
 
         if (set.isEmpty()) {

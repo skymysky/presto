@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.jdbc;
 
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.client.ServerInfo;
-import io.airlift.json.JsonCodec;
-import io.airlift.units.Duration;
+import mockwebserver3.MockResponse;
+import mockwebserver3.MockWebServer;
 import okhttp3.OkHttpClient;
-import okhttp3.mockwebserver.MockResponse;
-import okhttp3.mockwebserver.MockWebServer;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
@@ -26,9 +26,9 @@ import org.testng.annotations.Test;
 import java.io.IOException;
 import java.util.Optional;
 
+import static com.facebook.airlift.json.JsonCodec.jsonCodec;
 import static com.facebook.presto.client.NodeVersion.UNKNOWN;
 import static com.google.common.net.HttpHeaders.CONTENT_TYPE;
-import static io.airlift.json.JsonCodec.jsonCodec;
 import static org.testng.Assert.assertEquals;
 
 @Test(singleThreaded = true)
@@ -57,11 +57,12 @@ public class TestQueryExecutor
     public void testGetServerInfo()
             throws Exception
     {
-        ServerInfo expected = new ServerInfo(UNKNOWN, "test", true, Optional.of(Duration.valueOf("2m")));
+        ServerInfo expected = new ServerInfo(UNKNOWN, "test", true, false, Optional.of(Duration.valueOf("2m")));
 
-        server.enqueue(new MockResponse()
+        server.enqueue(new MockResponse.Builder()
                 .addHeader(CONTENT_TYPE, "application/json")
-                .setBody(SERVER_INFO_CODEC.toJson(expected)));
+                .body(SERVER_INFO_CODEC.toJson(expected))
+                .build());
 
         QueryExecutor executor = new QueryExecutor(new OkHttpClient());
 
@@ -70,6 +71,6 @@ public class TestQueryExecutor
         assertEquals(actual.getUptime(), Optional.of(Duration.valueOf("2m")));
 
         assertEquals(server.getRequestCount(), 1);
-        assertEquals(server.takeRequest().getPath(), "/v1/info");
+        assertEquals(server.takeRequest().getUrl().encodedPath(), "/v1/info");
     }
 }

@@ -13,10 +13,34 @@
  */
 package com.facebook.presto.orc.metadata.statistics;
 
-import io.airlift.slice.Slice;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.AbstractVariableWidthType;
+import com.facebook.presto.common.type.Type;
+
+import static com.google.common.base.Preconditions.checkArgument;
 
 public interface SliceColumnStatisticsBuilder
         extends StatisticsBuilder
 {
-    void addValue(Slice value);
+    @Override
+    default void addBlock(Type type, Block block)
+    {
+        checkArgument(type instanceof AbstractVariableWidthType, "type is not an AbstractVariableWidthType: %s", type);
+        for (int position = 0; position < block.getPositionCount(); position++) {
+            if (!block.isNull(position)) {
+                addValue(block, position);
+            }
+        }
+    }
+
+    @Override
+    default void addValue(Type type, Block block, int position)
+    {
+        checkArgument(type instanceof AbstractVariableWidthType, "type is not an AbstractVariableWidthType: %s", type);
+        if (!block.isNull(position)) {
+            addValue(block, position);
+        }
+    }
+
+    void addValue(Block block, int position);
 }

@@ -13,10 +13,9 @@
  */
 package com.facebook.presto.plugin.memory;
 
-import io.airlift.configuration.Config;
-import io.airlift.units.DataSize;
-
-import javax.validation.constraints.NotNull;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.units.DataSize;
+import jakarta.validation.constraints.NotNull;
 
 public class MemoryConfig
 {

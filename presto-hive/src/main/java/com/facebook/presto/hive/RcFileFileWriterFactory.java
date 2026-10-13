@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.hive.metastore.MetastoreUtil;
 import com.facebook.presto.hive.metastore.StorageFormat;
 import com.facebook.presto.hive.rcfile.HdfsRcFileDataSource;
 import com.facebook.presto.rcfile.RcFileDataSource;
@@ -20,10 +23,9 @@ import com.facebook.presto.rcfile.RcFileEncoding;
 import com.facebook.presto.rcfile.binary.BinaryRcFileEncoding;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableMap;
+import jakarta.inject.Inject;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.io.RCFileOutputFormat;
@@ -32,8 +34,6 @@ import org.apache.hadoop.hive.serde2.columnar.LazyBinaryColumnarSerDe;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.joda.time.DateTimeZone;
-
-import javax.inject.Inject;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -51,6 +51,7 @@ import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMNS;
 import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMN_TYPES;
+import static org.joda.time.DateTimeZone.UTC;
 
 public class RcFileFileWriterFactory
         implements HiveFileWriterFactory
@@ -93,7 +94,8 @@ public class RcFileFileWriterFactory
             StorageFormat storageFormat,
             Properties schema,
             JobConf configuration,
-            ConnectorSession session)
+            ConnectorSession session,
+            Optional<EncryptionInformation> encryptionInformation)
     {
         if (!HiveSessionProperties.isRcfileOptimizedWriterEnabled(session)) {
             return Optional.empty();
@@ -108,7 +110,7 @@ public class RcFileFileWriterFactory
             rcFileEncoding = new BinaryRcFileEncoding();
         }
         else if (ColumnarSerDe.class.getName().equals(storageFormat.getSerDe())) {
-            rcFileEncoding = createTextVectorEncoding(schema, hiveStorageTimeZone);
+            rcFileEncoding = createTextVectorEncoding(schema, session.getSqlFunctionProperties().isLegacyTimestamp() ? hiveStorageTimeZone : UTC);
         }
         else {
             return Optional.empty();
@@ -160,8 +162,8 @@ public class RcFileFileWriterFactory
                     codecName,
                     fileInputColumnIndexes,
                     ImmutableMap.<String, String>builder()
-                            .put(HiveMetadata.PRESTO_VERSION_NAME, nodeVersion.toString())
-                            .put(HiveMetadata.PRESTO_QUERY_ID_NAME, session.getQueryId())
+                            .put(MetastoreUtil.PRESTO_VERSION_NAME, nodeVersion.toString())
+                            .put(MetastoreUtil.PRESTO_QUERY_ID_NAME, session.getQueryId())
                             .build(),
                     validationInputFactory));
         }

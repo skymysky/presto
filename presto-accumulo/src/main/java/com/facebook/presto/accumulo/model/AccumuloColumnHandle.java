@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.accumulo.model;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -56,7 +56,7 @@ public final class AccumuloColumnHandle
         checkArgument(ordinal >= 0, "ordinal must be >= zero");
 
         this.comment = requireNonNull(comment, "comment is null");
-        this.indexed = requireNonNull(indexed, "indexed is null");
+        this.indexed = indexed;
     }
 
     @JsonProperty
@@ -98,7 +98,12 @@ public final class AccumuloColumnHandle
     @JsonIgnore
     public ColumnMetadata getColumnMetadata()
     {
-        return new ColumnMetadata(name, type, comment, false);
+        return ColumnMetadata.builder()
+                .setName(name)
+                .setType(type)
+                .setComment(comment)
+                .setHidden(false)
+                .build();
     }
 
     @JsonProperty

@@ -50,7 +50,7 @@ evaluate string arguments::
 
     SELECT 'Paul' BETWEEN 'John' AND 'Ringo'; -- true
 
-Not that the value, min, and max parameters to ``BETWEEN`` and ``NOT
+Note that the value, min, and max parameters to ``BETWEEN`` and ``NOT
 BETWEEN`` must be the same type.  For example, Presto will produce an
 error if you ask it if John is between 2.3 and 35.2.
 
@@ -153,3 +153,110 @@ Expression              Meaning
 ====================    ===========
 
 ``ANY`` and ``SOME`` have the same meaning and can be used interchangeably.
+
+LIKE
+----
+The LIKE operator is used to match a specified character pattern in a string. Patterns can contain
+regular characters as well as wildcards. Wildcard characters can be escaped using the single character
+specified for the ESCAPE parameter. Matching is case sensitive, and the pattern must match the whole string.
+
+Syntax::
+
+    expression LIKE pattern [ ESCAPE 'escape_character' ]
+
+if ``pattern`` or ``escape_character`` is null, the expression evaluates to null.
+
+====================    ===========
+Wildcard                Representation
+====================    ===========
+``%``                   The percent sign represents zero, one, or multiple characters
+``_``                   The underscore represents a single character
+====================    ===========
+
+Examples::
+
+    SELECT * FROM (VALUES ('abc'), ('bcd'), ('cde')) AS t (name)
+    WHERE name LIKE '%b%'
+    --returns 'abc' and  'bcd'
+
+    SELECT * FROM (VALUES ('abc'), ('bcd'), ('cde')) AS t (name)
+    WHERE name LIKE '_b%'
+    --returns 'abc'
+
+    SELECT * FROM (VALUES ('abc'), ('bcd'), ('cde')) AS t (name)
+    WHERE name LIKE 'b%'
+    --returns 'bcd'
+
+    SELECT * FROM (VALUES ('abc'), ('bcd'), ('cde')) AS t (name)
+    WHERE name LIKE 'B%'
+    --returns nothing
+
+    SELECT * FROM (VALUES ('a_c'), ('_cd'), ('cde')) AS t (name)
+    WHERE name LIKE '%#_%' ESCAPE '#'
+    --returns 'a_c' and  '_cd'
+
+    SELECT * FROM (VALUES ('a%c'), ('%cd'), ('cde')) AS t (name)
+    WHERE name LIKE '%#%%' ESCAPE '#'
+    --returns 'a%c' and  '%cd'
+
+   SELECT 'ab' || chr(10) || 'c' LIKE 'ab'  --chr(10) is a newline character
+    --returns 'false'
+
+
+Row comparison: IN
+------------------
+
+The IN comparison operator in SQL is used to compare a value with a list of literal values that have been specified.
+The IN operator returns TRUE if the value matches any of the literal values in the list. The IN operator can be
+used to compare values with the following patterns. It can fetch records according to multiple values specified in
+WHERE clause. A sub-query or list of values must be specified in the parenthesis, however one column must be specified
+in the sub-query.
+
+.. code-block:: none
+
+    WHERE column [NOT] IN ('value1','value2');
+    WHERE column [NOT] IN ( subquery )
+
+
+Examples::
+
+    SELECT * FROM region WHERE name IN ('AMERICA', 'EUROPE');
+
+    SELECT * FROM region WHERE name IN ('NULL', 'AMERICA', 'EUROPE');
+
+    SELECT * FROM table_name WHERE (column1, column2) IN ((NULL, 'value1'), ('value2', 'value3'));
+
+
+Row comparison: OR
+------------------
+
+The OR operator is used to filter the results of a query based on more than one condition.
+It returns a record if any of the conditions separated by OR is TRUE.
+The values in the clause are used for multiple comparisons that are combined as
+a logical OR. The preceding query is equivalent to the following query:
+
+Example::
+
+    SELECT * FROM region WHERE name = 'AMERICA' OR name = 'EUROPE';
+
+
+Row comparison: NOT IN
+----------------------
+
+The NOT IN comparison operator in SQL is used to exclude the rows that match any value in a list or subquery.
+
+You can negate the comparisons by adding NOT, and get all other regions
+except the values in list:
+
+Example::
+
+    SELECT * FROM region WHERE name NOT IN ('AMERICA', 'EUROPE');
+
+
+When using a subquery to determine the values to use in the comparison, the
+subquery must return a single column and one or more rows.
+
+
+Example::
+
+    SELECT id, name FROM region WHERE name IN (SELECT name FROM region WHERE id IN (3,4));

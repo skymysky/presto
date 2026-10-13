@@ -13,12 +13,13 @@
  */
 package com.facebook.presto.resourceGroups;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
+import com.facebook.presto.spi.resourceGroups.ResourceGroupQueryLimits;
 import com.facebook.presto.spi.resourceGroups.SchedulingPolicy;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
 
 import java.util.HashSet;
 import java.util.List;
@@ -28,6 +29,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static com.facebook.presto.spi.resourceGroups.ResourceGroupQueryLimits.NO_LIMITS;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -48,8 +50,8 @@ public class ResourceGroupSpec
     private final Optional<Boolean> jmxExport;
     private final Optional<Duration> softCpuLimit;
     private final Optional<Duration> hardCpuLimit;
-    private final Optional<Duration> queuedTimeLimit;
-    private final Optional<Duration> runningTimeLimit;
+    private final Optional<Integer> workersPerQueryLimit;
+    private final ResourceGroupQueryLimits perQueryLimits;
 
     @JsonCreator
     public ResourceGroupSpec(
@@ -65,18 +67,17 @@ public class ResourceGroupSpec
             @JsonProperty("jmxExport") Optional<Boolean> jmxExport,
             @JsonProperty("softCpuLimit") Optional<Duration> softCpuLimit,
             @JsonProperty("hardCpuLimit") Optional<Duration> hardCpuLimit,
-            @JsonProperty("queuedTimeLimit") Optional<Duration> queuedTimeLimit,
-            @JsonProperty("runningTimeLimit") Optional<Duration> runningTimeLimit)
+            @JsonProperty("perQueryLimits") Optional<ResourceGroupQueryLimits> perQueryLimits,
+            @JsonProperty("workersPerQueryLimit") Optional<Integer> workersPerQueryLimit)
     {
         this.softCpuLimit = requireNonNull(softCpuLimit, "softCpuLimit is null");
         this.hardCpuLimit = requireNonNull(hardCpuLimit, "hardCpuLimit is null");
         this.jmxExport = requireNonNull(jmxExport, "jmxExport is null");
-        this.queuedTimeLimit = requireNonNull(queuedTimeLimit, "queuedTimeLimit is null");
-        this.runningTimeLimit = requireNonNull(runningTimeLimit, "runningTimeLimit is null");
         this.name = requireNonNull(name, "name is null");
         checkArgument(maxQueued >= 0, "maxQueued is negative");
         this.maxQueued = maxQueued;
         this.softConcurrencyLimit = softConcurrencyLimit;
+        this.workersPerQueryLimit = workersPerQueryLimit;
 
         checkArgument(hardConcurrencyLimit.isPresent() || maxRunning.isPresent(), "Missing required property: hardConcurrencyLimit");
         this.hardConcurrencyLimit = hardConcurrencyLimit.orElseGet(maxRunning::get);
@@ -101,6 +102,8 @@ public class ResourceGroupSpec
         }
         this.softMemoryLimit = absoluteSize;
         this.softMemoryLimitFraction = fraction;
+
+        this.perQueryLimits = perQueryLimits.orElse(NO_LIMITS);
 
         this.subGroups = ImmutableList.copyOf(requireNonNull(subGroups, "subGroups is null").orElse(ImmutableList.of()));
         Set<ResourceGroupNameTemplate> names = new HashSet<>();
@@ -128,6 +131,11 @@ public class ResourceGroupSpec
     public Optional<Integer> getSoftConcurrencyLimit()
     {
         return softConcurrencyLimit;
+    }
+
+    public Optional<Integer> getWorkersPerQueryLimit()
+    {
+        return workersPerQueryLimit;
     }
 
     public int getHardConcurrencyLimit()
@@ -170,14 +178,9 @@ public class ResourceGroupSpec
         return hardCpuLimit;
     }
 
-    public Optional<Duration> getQueuedTimeLimit()
+    public ResourceGroupQueryLimits getPerQueryLimits()
     {
-        return queuedTimeLimit;
-    }
-
-    public Optional<Duration> getRunningTimeLimit()
-    {
-        return runningTimeLimit;
+        return perQueryLimits;
     }
 
     @Override
@@ -195,14 +198,14 @@ public class ResourceGroupSpec
                 maxQueued == that.maxQueued &&
                 softConcurrencyLimit.equals(that.softConcurrencyLimit) &&
                 hardConcurrencyLimit == that.hardConcurrencyLimit &&
+                workersPerQueryLimit.equals(that.workersPerQueryLimit) &&
                 schedulingPolicy.equals(that.schedulingPolicy) &&
                 schedulingWeight.equals(that.schedulingWeight) &&
                 subGroups.equals(that.subGroups) &&
                 jmxExport.equals(that.jmxExport) &&
                 softCpuLimit.equals(that.softCpuLimit) &&
                 hardCpuLimit.equals(that.hardCpuLimit) &&
-                queuedTimeLimit.equals(that.queuedTimeLimit) &&
-                runningTimeLimit.equals(that.runningTimeLimit));
+                perQueryLimits.equals(that.perQueryLimits));
     }
 
     // Subgroups not included, used to determine whether a group needs to be reconfigured
@@ -216,13 +219,13 @@ public class ResourceGroupSpec
                 maxQueued == other.maxQueued &&
                 softConcurrencyLimit.equals(other.softConcurrencyLimit) &&
                 hardConcurrencyLimit == other.hardConcurrencyLimit &&
+                workersPerQueryLimit.equals(other.workersPerQueryLimit) &&
                 schedulingPolicy.equals(other.schedulingPolicy) &&
                 schedulingWeight.equals(other.schedulingWeight) &&
                 jmxExport.equals(other.jmxExport) &&
                 softCpuLimit.equals(other.softCpuLimit) &&
                 hardCpuLimit.equals(other.hardCpuLimit) &&
-                queuedTimeLimit.equals(other.queuedTimeLimit) &&
-                runningTimeLimit.equals(other.runningTimeLimit));
+                perQueryLimits.equals(other.perQueryLimits));
     }
 
     @Override
@@ -234,14 +237,14 @@ public class ResourceGroupSpec
                 maxQueued,
                 softConcurrencyLimit,
                 hardConcurrencyLimit,
+                workersPerQueryLimit,
                 schedulingPolicy,
                 schedulingWeight,
                 subGroups,
                 jmxExport,
                 softCpuLimit,
                 hardCpuLimit,
-                queuedTimeLimit,
-                runningTimeLimit);
+                perQueryLimits);
     }
 
     @Override
@@ -258,8 +261,8 @@ public class ResourceGroupSpec
                 .add("jmxExport", jmxExport)
                 .add("softCpuLimit", softCpuLimit)
                 .add("hardCpuLimit", hardCpuLimit)
-                .add("queuedTimeLimit", queuedTimeLimit)
-                .add("runningTimeLimit", runningTimeLimit)
+                .add("perQueryLimits", perQueryLimits)
+                .add("workersPerQueryLimit", workersPerQueryLimit)
                 .toString();
     }
 }

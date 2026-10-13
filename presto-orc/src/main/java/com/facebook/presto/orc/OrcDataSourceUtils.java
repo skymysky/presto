@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.airlift.units.DataSize;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
-import io.airlift.units.DataSize;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -30,6 +30,8 @@ import static java.lang.Math.toIntExact;
 
 public final class OrcDataSourceUtils
 {
+    public static final int EXPECTED_FOOTER_SIZE_IN_BYTES = 16 * 1024;
+
     private OrcDataSourceUtils()
     {
     }

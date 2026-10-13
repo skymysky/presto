@@ -13,19 +13,41 @@
  */
 package com.facebook.presto.orc.metadata.statistics;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.RealType;
+import com.facebook.presto.common.type.Type;
+
 import java.util.List;
 import java.util.Optional;
 
-import static com.facebook.presto.orc.metadata.statistics.DoubleStatistics.DOUBLE_VALUE_BYTES;
 import static java.util.Objects.requireNonNull;
 
 public class DoubleStatisticsBuilder
         implements StatisticsBuilder
 {
     private long nonNullValueCount;
+    private long storageSize;
+    private long rawSize;
     private boolean hasNan;
     private double minimum = Double.POSITIVE_INFINITY;
     private double maximum = Double.NEGATIVE_INFINITY;
+
+    @Override
+    public void addBlock(Type type, Block block)
+    {
+        for (int position = 0; position < block.getPositionCount(); position++) {
+            if (!block.isNull(position)) {
+                double value;
+                if (type.equals(RealType.REAL)) {
+                    value = Float.intBitsToFloat((int) type.getLong(block, position));
+                }
+                else {
+                    value = type.getDouble(block, position);
+                }
+                addValue(value);
+            }
+        }
+    }
 
     public void addValue(double value)
     {
@@ -42,12 +64,10 @@ public class DoubleStatisticsBuilder
     private void addDoubleStatistics(long valueCount, DoubleStatistics value)
     {
         requireNonNull(value, "value is null");
-        requireNonNull(value.getMin(), "value.getMin() is null");
-        requireNonNull(value.getMax(), "value.getMax() is null");
 
         nonNullValueCount += valueCount;
-        minimum = Math.min(value.getMin(), minimum);
-        maximum = Math.max(value.getMax(), maximum);
+        minimum = Math.min(value.getMinPrimitive(), minimum);
+        maximum = Math.max(value.getMaxPrimitive(), maximum);
     }
 
     private Optional<DoubleStatistics> buildDoubleStatistics()
@@ -63,17 +83,22 @@ public class DoubleStatisticsBuilder
     public ColumnStatistics buildColumnStatistics()
     {
         Optional<DoubleStatistics> doubleStatistics = buildDoubleStatistics();
-        return new ColumnStatistics(
-                nonNullValueCount,
-                doubleStatistics.map(s -> DOUBLE_VALUE_BYTES).orElse(0L),
-                null,
-                null,
-                doubleStatistics.orElse(null),
-                null,
-                null,
-                null,
-                null,
-                null);
+        if (doubleStatistics.isPresent()) {
+            return new DoubleColumnStatistics(nonNullValueCount, null, rawSize, storageSize, doubleStatistics.get());
+        }
+        return new ColumnStatistics(nonNullValueCount, null, rawSize, storageSize);
+    }
+
+    @Override
+    public void incrementRawSize(long rawSize)
+    {
+        this.rawSize += rawSize;
+    }
+
+    @Override
+    public void incrementSize(long storageSize)
+    {
+        this.storageSize += storageSize;
     }
 
     public static Optional<DoubleStatistics> mergeDoubleStatistics(List<ColumnStatistics> stats)

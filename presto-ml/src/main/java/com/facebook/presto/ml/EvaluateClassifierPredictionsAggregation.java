@@ -13,7 +13,8 @@
  */
 package com.facebook.presto.ml;
 
-import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.function.AggregationFunction;
 import com.facebook.presto.spi.function.AggregationState;
 import com.facebook.presto.spi.function.CombineFunction;
@@ -21,7 +22,6 @@ import com.facebook.presto.spi.function.InputFunction;
 import com.facebook.presto.spi.function.LiteralParameters;
 import com.facebook.presto.spi.function.OutputFunction;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 
@@ -29,7 +29,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.google.common.collect.Sets.union;
 import static io.airlift.slice.SizeOf.SIZE_OF_INT;
 import static java.lang.String.format;
@@ -102,15 +102,15 @@ public final class EvaluateClassifierPredictionsAggregation
                 .stream()
                 .reduce(0, Integer::sum);
         long total = correct + state.getFalsePositives().values().stream().reduce(0, Integer::sum);
-        sb.append(format(Locale.US, "Accuracy: %d/%d (%.2f%%)\n", correct, total, 100.0 * correct / (double) total));
+        sb.append(format(Locale.US, "Accuracy: %d/%d (%.2f%%)%n", correct, total, 100.0 * correct / (double) total));
         Set<String> labels = union(union(state.getTruePositives().keySet(), state.getFalsePositives().keySet()), state.getFalseNegatives().keySet());
         for (String label : labels) {
             int truePositives = state.getTruePositives().getOrDefault(label, 0);
             int falsePositives = state.getFalsePositives().getOrDefault(label, 0);
             int falseNegatives = state.getFalseNegatives().getOrDefault(label, 0);
-            sb.append(format(Locale.US, "Class '%s'\n", label));
-            sb.append(format(Locale.US, "Precision: %d/%d (%.2f%%)\n", truePositives, truePositives + falsePositives, 100.0 * truePositives / (double) (truePositives + falsePositives)));
-            sb.append(format(Locale.US, "Recall: %d/%d (%.2f%%)\n", truePositives, truePositives + falseNegatives, 100.0 * truePositives / (double) (truePositives + falseNegatives)));
+            sb.append(format(Locale.US, "Class '%s'%n", label));
+            sb.append(format(Locale.US, "Precision: %d/%d (%.2f%%)%n", truePositives, truePositives + falsePositives, 100.0 * truePositives / (double) (truePositives + falsePositives)));
+            sb.append(format(Locale.US, "Recall: %d/%d (%.2f%%)%n", truePositives, truePositives + falseNegatives, 100.0 * truePositives / (double) (truePositives + falseNegatives)));
         }
 
         VARCHAR.writeString(out, sb.toString());

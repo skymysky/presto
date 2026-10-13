@@ -6,7 +6,7 @@ General Changes
 ---------------
 
 * Fix query failure and memory usage tracking when query contains
-  :func:`transform_keys` or :func:`transform_values`.
+  :func:`!transform_keys` or :func:`!transform_values`.
 * Prevent ``CREATE TABLE IF NOT EXISTS`` queries from ever failing with *"Table already exists"*.
 * Fix query failure when ``ORDER BY`` expressions reference columns that are used in
   the ``GROUP BY`` clause by their fully-qualified name.
@@ -24,7 +24,7 @@ General Changes
   behavior is disabled by default and can be enabled by setting the
   config property ``task.level-absolute-priority=true``.
 * Improve the fairness of the local scheduler such that long-running queries
-  which spend more time on the CPU per scheduling quanta (e.g., due to
+  which spend more time on the CPU per scheduling quanta (for example, due to
   slow connectors) do not get a disproportionate share of CPU. The new
   behavior is disabled by default and can be enabled by setting the
   config property ``task.legacy-scheduling-behavior=false``.

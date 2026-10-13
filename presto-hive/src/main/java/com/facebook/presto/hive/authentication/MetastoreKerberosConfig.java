@@ -13,10 +13,9 @@
  */
 package com.facebook.presto.hive.authentication;
 
-import io.airlift.configuration.Config;
-import io.airlift.configuration.ConfigDescription;
-
-import javax.validation.constraints.NotNull;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
+import jakarta.validation.constraints.NotNull;
 
 public class MetastoreKerberosConfig
 {

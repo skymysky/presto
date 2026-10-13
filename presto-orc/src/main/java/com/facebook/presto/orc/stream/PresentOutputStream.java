@@ -13,14 +13,12 @@
  */
 package com.facebook.presto.orc.stream;
 
+import com.facebook.presto.orc.ColumnWriterOptions;
+import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.OrcOutputBuffer;
 import com.facebook.presto.orc.checkpoint.BooleanStreamCheckpoint;
-import com.facebook.presto.orc.metadata.CompressionKind;
-import com.facebook.presto.orc.metadata.Stream;
-import io.airlift.slice.SliceOutput;
+import jakarta.annotation.Nullable;
 import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,9 +42,9 @@ public class PresentOutputStream
 
     private boolean closed;
 
-    public PresentOutputStream(CompressionKind compression, int bufferSize)
+    public PresentOutputStream(ColumnWriterOptions columnWriterOptions, Optional<DwrfDataEncryptor> dwrfEncryptor)
     {
-        this.buffer = new OrcOutputBuffer(compression, bufferSize);
+        this.buffer = new OrcOutputBuffer(columnWriterOptions, dwrfEncryptor);
     }
 
     public void writeBoolean(boolean value)
@@ -101,14 +99,16 @@ public class PresentOutputStream
         return Optional.of(booleanOutputStream.getCheckpoints());
     }
 
-    public Optional<Stream> writeDataStreams(int column, SliceOutput outputStream)
+    public Optional<StreamDataOutput> getStreamDataOutput(int column, int sequence)
     {
         checkArgument(closed);
         if (booleanOutputStream == null) {
             return Optional.empty();
         }
-        Stream stream = booleanOutputStream.writeDataStreams(column, outputStream).get();
-        return Optional.of(new Stream(stream.getColumn(), PRESENT, stream.getLength(), stream.isUseVInts()));
+
+        // get boolean output DATA stream as PRESENT stream
+        StreamDataOutput streamDataOutput = booleanOutputStream.getStreamDataOutput(column, sequence, PRESENT);
+        return Optional.of(streamDataOutput);
     }
 
     public long getBufferedBytes()

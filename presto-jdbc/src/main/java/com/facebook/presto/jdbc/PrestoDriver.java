@@ -13,7 +13,6 @@
  */
 package com.facebook.presto.jdbc;
 
-import com.google.common.base.Throwables;
 import okhttp3.OkHttpClient;
 
 import java.io.Closeable;
@@ -42,7 +41,7 @@ public class PrestoDriver
 
     private static final String DRIVER_URL_START = "jdbc:presto:";
 
-    private final OkHttpClient httpClient = new OkHttpClient().newBuilder()
+    private final OkHttpClient httpClient = new OkHttpClient.Builder()
             .addInterceptor(userAgent(DRIVER_NAME + "/" + DRIVER_VERSION))
             .build();
 
@@ -64,7 +63,7 @@ public class PrestoDriver
             DriverManager.registerDriver(new PrestoDriver());
         }
         catch (SQLException e) {
-            throw Throwables.propagate(e);
+            throw new RuntimeException(e);
         }
     }
 
@@ -86,6 +85,7 @@ public class PrestoDriver
         PrestoDriverUri uri = new PrestoDriverUri(url, info);
 
         OkHttpClient.Builder builder = httpClient.newBuilder();
+        builder.followRedirects(uri.followRedirects());
         uri.setupClient(builder);
         QueryExecutor executor = new QueryExecutor(builder.build());
 

@@ -13,30 +13,26 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.airlift.concurrent.MoreFutures;
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.airlift.json.smile.SmileCodec;
+import com.facebook.airlift.log.Logger;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.IntArrayBlockBuilder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.spi.ConnectorPageSink;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PageIndexer;
 import com.facebook.presto.spi.PageIndexerFactory;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.block.DictionaryBlock;
-import com.facebook.presto.spi.block.IntArrayBlockBuilder;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
-import io.airlift.concurrent.MoreFutures;
-import io.airlift.json.JsonCodec;
-import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
-import it.unimi.dsi.fastutil.ints.IntArraySet;
-import it.unimi.dsi.fastutil.ints.IntIterator;
-import it.unimi.dsi.fastutil.ints.IntSet;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 
@@ -51,14 +47,21 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.hive.HiveBucketFunction.createHiveCompatibleBucketFunction;
+import static com.facebook.presto.hive.HiveBucketFunction.createPrestoNativeBucketFunction;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_TOO_MANY_OPEN_PARTITIONS;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITER_CLOSE_ERROR;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.google.common.base.MoreObjects.toStringHelper;
-import static com.google.common.base.Preconditions.checkArgument;
+import static com.facebook.presto.hive.HiveSessionProperties.isFileRenamingEnabled;
+import static com.facebook.presto.hive.HiveSessionProperties.isLegacyTimestampBucketing;
+import static com.facebook.presto.hive.HiveSessionProperties.isOptimizedPartitionUpdateSerializationEnabled;
+import static com.facebook.presto.hive.HiveUtil.serializeZstdCompressed;
+import static com.facebook.presto.hive.PartitionUpdate.mergePartitionUpdates;
 import static com.google.common.base.Verify.verify;
-import static io.airlift.slice.SizeOf.sizeOf;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.slice.Slices.wrappedBuffer;
+import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 
@@ -70,6 +73,9 @@ public class HivePageSink
     private static final int MAX_PAGE_POSITIONS = 4096;
 
     private final HiveWriterFactory writerFactory;
+
+    private final String schemaName;
+    private final String tableName;
 
     private final int[] dataColumnInputIndex; // ordinal of columns (not counting sample weight column)
     private final int[] partitionColumnsInputIndex; // ordinal of columns (not counting sample weight column)
@@ -84,29 +90,40 @@ public class HivePageSink
     private final ListeningExecutorService writeVerificationExecutor;
 
     private final JsonCodec<PartitionUpdate> partitionUpdateCodec;
+    private final SmileCodec<PartitionUpdate> partitionUpdateSmileCodec;
 
     private final List<HiveWriter> writers = new ArrayList<>();
-    private final List<WriterPositions> writerPositions = new ArrayList<>();
 
     private final ConnectorSession session;
+    private final boolean fileRenamingEnabled;
 
+    private long writtenBytes;
     private long systemMemoryUsage;
+    private long validationCpuNanos;
+
+    private boolean waitForFileRenaming;
 
     public HivePageSink(
             HiveWriterFactory writerFactory,
             List<HiveColumnHandle> inputColumns,
             Optional<HiveBucketProperty> bucketProperty,
+            String schemaName,
+            String tableName,
             PageIndexerFactory pageIndexerFactory,
             TypeManager typeManager,
             HdfsEnvironment hdfsEnvironment,
             int maxOpenWriters,
             ListeningExecutorService writeVerificationExecutor,
             JsonCodec<PartitionUpdate> partitionUpdateCodec,
+            SmileCodec<PartitionUpdate> partitionUpdateSmileCodec,
             ConnectorSession session)
     {
         this.writerFactory = requireNonNull(writerFactory, "writerFactory is null");
 
         requireNonNull(inputColumns, "inputColumns is null");
+
+        this.schemaName = requireNonNull(schemaName, "schemaName is null");
+        this.tableName = requireNonNull(tableName, "tableName is null");
 
         requireNonNull(pageIndexerFactory, "pageIndexerFactory is null");
 
@@ -114,6 +131,7 @@ public class HivePageSink
         this.maxOpenWriters = maxOpenWriters;
         this.writeVerificationExecutor = requireNonNull(writeVerificationExecutor, "writeVerificationExecutor is null");
         this.partitionUpdateCodec = requireNonNull(partitionUpdateCodec, "partitionUpdateCodec is null");
+        this.partitionUpdateSmileCodec = requireNonNull(partitionUpdateSmileCodec, "partitionUpdateSmileCodec is null");
 
         requireNonNull(bucketProperty, "bucketProperty is null");
         this.pagePartitioner = new HiveWriterPagePartitioner(
@@ -127,7 +145,7 @@ public class HivePageSink
         ImmutableList.Builder<Integer> partitionColumns = ImmutableList.builder();
         ImmutableList.Builder<Integer> dataColumnsInputIndex = ImmutableList.builder();
         Object2IntMap<String> dataColumnNameToIdMap = new Object2IntOpenHashMap<>();
-        Map<String, HiveType> dataColumnNameToTypeMap = new HashMap<>();
+        Map<String, HiveType> dataColumnNameToHiveTypeMap = new HashMap<>();
         // sample weight column is passed separately, so index must be calculated without this column
         for (int inputIndex = 0; inputIndex < inputColumns.size(); inputIndex++) {
             HiveColumnHandle column = inputColumns.get(inputIndex);
@@ -137,7 +155,7 @@ public class HivePageSink
             else {
                 dataColumnsInputIndex.add(inputIndex);
                 dataColumnNameToIdMap.put(column.getName(), inputIndex);
-                dataColumnNameToTypeMap.put(column.getName(), column.getHiveType());
+                dataColumnNameToHiveTypeMap.put(column.getName(), column.getHiveType());
             }
         }
         this.partitionColumnsInputIndex = Ints.toArray(partitionColumns.build());
@@ -148,10 +166,20 @@ public class HivePageSink
             bucketColumns = bucketProperty.get().getBucketedBy().stream()
                     .mapToInt(dataColumnNameToIdMap::get)
                     .toArray();
-            List<HiveType> bucketColumnTypes = bucketProperty.get().getBucketedBy().stream()
-                    .map(dataColumnNameToTypeMap::get)
-                    .collect(toList());
-            bucketFunction = new HiveBucketFunction(bucketCount, bucketColumnTypes);
+            BucketFunctionType bucketFunctionType = bucketProperty.get().getBucketFunctionType();
+            switch (bucketFunctionType) {
+                case HIVE_COMPATIBLE:
+                    List<HiveType> bucketColumnHiveTypes = bucketProperty.get().getBucketedBy().stream()
+                            .map(dataColumnNameToHiveTypeMap::get)
+                            .collect(toImmutableList());
+                    bucketFunction = createHiveCompatibleBucketFunction(bucketCount, bucketColumnHiveTypes, isLegacyTimestampBucketing(session));
+                    break;
+                case PRESTO_NATIVE:
+                    bucketFunction = createPrestoNativeBucketFunction(bucketCount, bucketProperty.get().getTypes().get(), isLegacyTimestampBucketing(session));
+                    break;
+                default:
+                    throw new IllegalArgumentException("Unsupported bucket function type " + bucketFunctionType);
+            }
         }
         else {
             bucketColumns = null;
@@ -159,12 +187,31 @@ public class HivePageSink
         }
 
         this.session = requireNonNull(session, "session is null");
+        this.fileRenamingEnabled = isFileRenamingEnabled(session);
+    }
+
+    @Override
+    public long getCompletedBytes()
+    {
+        return writtenBytes;
+    }
+
+    @Override
+    public long getWrittenFilesCount()
+    {
+        return writers.size();
     }
 
     @Override
     public long getSystemMemoryUsage()
     {
         return systemMemoryUsage;
+    }
+
+    @Override
+    public long getValidationCpuNanos()
+    {
+        return validationCpuNanos;
     }
 
     @Override
@@ -178,27 +225,58 @@ public class HivePageSink
 
     private ListenableFuture<Collection<Slice>> doFinish()
     {
-        ImmutableList.Builder<Slice> partitionUpdates = ImmutableList.builder();
+        ImmutableList.Builder<PartitionUpdate> partitionUpdatesBuilder = ImmutableList.builder();
         List<Callable<Object>> verificationTasks = new ArrayList<>();
         for (HiveWriter writer : writers) {
             writer.commit();
-            PartitionUpdate partitionUpdate = writer.getPartitionUpdate();
-            partitionUpdates.add(wrappedBuffer(partitionUpdateCodec.toJsonBytes(partitionUpdate)));
+            partitionUpdatesBuilder.add(writer.getPartitionUpdate());
             writer.getVerificationTask()
                     .map(Executors::callable)
                     .ifPresent(verificationTasks::add);
         }
-        List<Slice> result = partitionUpdates.build();
+
+        List<PartitionUpdate> partitionUpdates = partitionUpdatesBuilder.build();
+        boolean optimizedPartitionUpdateSerializationEnabled = isOptimizedPartitionUpdateSerializationEnabled(session);
+        if (optimizedPartitionUpdateSerializationEnabled) {
+            // Merge multiple partition updates for a single partition into one.
+            // Multiple partition updates for a single partition are produced when writing into a bucketed table.
+            // Merged partition updates will contain multiple items in the fileWriteInfos list (one per bucket).
+            // This optimization should be enabled only together with the optimized serialization (compression + binary encoding).
+            // Since serialized fragments will be transmitted as Presto pages serializing a merged partition update to JSON without
+            // compression is unsafe, as it may cross the maximum page size limit.
+            partitionUpdates = mergePartitionUpdates(partitionUpdates);
+        }
+
+        ImmutableList.Builder<Slice> serializedPartitionUpdatesBuilder = ImmutableList.builder();
+        for (PartitionUpdate partitionUpdate : partitionUpdates) {
+            byte[] serializedBytes;
+            if (optimizedPartitionUpdateSerializationEnabled) {
+                serializedBytes = serializeZstdCompressed(partitionUpdateSmileCodec, partitionUpdate);
+            }
+            else {
+                serializedBytes = partitionUpdateCodec.toBytes(partitionUpdate);
+            }
+            serializedPartitionUpdatesBuilder.add(wrappedBuffer(serializedBytes));
+        }
+
+        List<Slice> serializedPartitionUpdates = serializedPartitionUpdatesBuilder.build();
+
+        writtenBytes = writers.stream()
+                .mapToLong(HiveWriter::getWrittenBytes)
+                .sum();
+        validationCpuNanos = writers.stream()
+                .mapToLong(HiveWriter::getValidationCpuNanos)
+                .sum();
 
         if (verificationTasks.isEmpty()) {
-            return Futures.immediateFuture(result);
+            return Futures.immediateFuture(serializedPartitionUpdates);
         }
 
         try {
             List<ListenableFuture<?>> futures = writeVerificationExecutor.invokeAll(verificationTasks).stream()
                     .map(future -> (ListenableFuture<?>) future)
                     .collect(toList());
-            return Futures.transform(Futures.allAsList(futures), input -> result);
+            return Futures.transform(Futures.allAsList(futures), input -> serializedPartitionUpdates, directExecutor());
         }
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -261,39 +339,51 @@ public class HivePageSink
     {
         int[] writerIndexes = getWriterIndexes(page);
 
+        // position count for each writer
+        int[] sizes = new int[writers.size()];
+        for (int index : writerIndexes) {
+            sizes[index]++;
+        }
+
         // record which positions are used by which writer
+        int[][] writerPositions = new int[writers.size()][];
+        int[] counts = new int[writers.size()];
+
         for (int position = 0; position < page.getPositionCount(); position++) {
-            int writerIndex = writerIndexes[position];
-            writerPositions.get(writerIndex).add(position);
+            int index = writerIndexes[position];
+
+            int count = counts[index];
+            if (count == 0) {
+                writerPositions[index] = new int[sizes[index]];
+            }
+            writerPositions[index][count] = position;
+            counts[index] = count + 1;
         }
 
         // invoke the writers
         Page dataPage = getDataPage(page);
-        IntSet writersUsed = new IntArraySet(writerIndexes);
-        for (IntIterator iterator = writersUsed.iterator(); iterator.hasNext(); ) {
-            int writerIndex = iterator.nextInt();
-            WriterPositions currentWriterPositions = writerPositions.get(writerIndex);
-            if (currentWriterPositions.isEmpty()) {
+        for (int index = 0; index < writerPositions.length; index++) {
+            int[] positions = writerPositions[index];
+            if (positions == null) {
                 continue;
             }
 
             // If write is partitioned across multiple writers, filter page using dictionary blocks
             Page pageForWriter = dataPage;
-            if (currentWriterPositions.size() != dataPage.getPositionCount()) {
-                Block[] blocks = new Block[dataPage.getChannelCount()];
-                for (int channel = 0; channel < dataPage.getChannelCount(); channel++) {
-                    blocks[channel] = new DictionaryBlock(currentWriterPositions.size(), dataPage.getBlock(channel), currentWriterPositions.getPositionsArray());
-                }
-                pageForWriter = new Page(currentWriterPositions.size(), blocks);
+            if (positions.length != dataPage.getPositionCount()) {
+                verify(positions.length == counts[index]);
+                pageForWriter = pageForWriter.getPositions(positions, 0, positions.length);
             }
 
-            HiveWriter writer = writers.get(writerIndex);
+            HiveWriter writer = writers.get(index);
 
+            long currentWritten = writer.getWrittenBytes();
             long currentMemory = writer.getSystemMemoryUsage();
-            writer.append(pageForWriter);
-            systemMemoryUsage += (writer.getSystemMemoryUsage() - currentMemory);
 
-            currentWriterPositions.clear();
+            writer.append(pageForWriter);
+
+            writtenBytes += (writer.getWrittenBytes() - currentWritten);
+            systemMemoryUsage += (writer.getSystemMemoryUsage() - currentMemory);
         }
     }
 
@@ -303,15 +393,12 @@ public class HivePageSink
         Block bucketBlock = buildBucketBlock(page);
         int[] writerIndexes = pagePartitioner.partitionPage(partitionColumns, bucketBlock);
         if (pagePartitioner.getMaxIndex() >= maxOpenWriters) {
-            throw new PrestoException(HIVE_TOO_MANY_OPEN_PARTITIONS, "Too many open partitions");
+            throw new PrestoException(HIVE_TOO_MANY_OPEN_PARTITIONS, format("Exceeded limit of %s open writers for partitions/buckets", maxOpenWriters));
         }
 
         // expand writers list to new size
         while (writers.size() <= pagePartitioner.getMaxIndex()) {
             writers.add(null);
-            WriterPositions newWriterPositions = new WriterPositions();
-            systemMemoryUsage += sizeOf(newWriterPositions.getPositionsArray());
-            writerPositions.add(newWriterPositions);
         }
 
         // create missing writers
@@ -323,7 +410,7 @@ public class HivePageSink
 
             OptionalInt bucketNumber = OptionalInt.empty();
             if (bucketBlock != null) {
-                bucketNumber = OptionalInt.of(bucketBlock.getInt(position, 0));
+                bucketNumber = OptionalInt.of(bucketBlock.getInt(position));
             }
             HiveWriter writer = writerFactory.createWriter(partitionColumns, position, bucketNumber);
             writers.set(writerIndex, writer);
@@ -350,7 +437,7 @@ public class HivePageSink
             return null;
         }
 
-        IntArrayBlockBuilder bucketColumnBuilder = new IntArrayBlockBuilder(new BlockBuilderStatus(), page.getPositionCount());
+        IntArrayBlockBuilder bucketColumnBuilder = new IntArrayBlockBuilder(null, page.getPositionCount());
         Page bucketColumnsPage = extractColumns(page, bucketColumns);
         for (int position = 0; position < page.getPositionCount(); position++) {
             int bucket = bucketFunction.getBucket(bucketColumnsPage, position);
@@ -410,47 +497,6 @@ public class HivePageSink
         public int getMaxIndex()
         {
             return pageIndexer.getMaxIndex();
-        }
-    }
-
-    private static final class WriterPositions
-    {
-        private final int[] positions = new int[MAX_PAGE_POSITIONS];
-        private int size;
-
-        public boolean isEmpty()
-        {
-            return size == 0;
-        }
-
-        public int size()
-        {
-            return size;
-        }
-
-        public int[] getPositionsArray()
-        {
-            return positions;
-        }
-
-        public void add(int position)
-        {
-            checkArgument(size < positions.length, "Too many page positions");
-            positions[size] = position;
-            size++;
-        }
-
-        public void clear()
-        {
-            size = 0;
-        }
-
-        @Override
-        public String toString()
-        {
-            return toStringHelper(this)
-                    .add("size", size)
-                    .toString();
         }
     }
 }

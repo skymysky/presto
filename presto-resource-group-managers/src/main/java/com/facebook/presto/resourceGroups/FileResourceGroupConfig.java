@@ -13,9 +13,8 @@
  */
 package com.facebook.presto.resourceGroups;
 
-import io.airlift.configuration.Config;
-
-import javax.validation.constraints.NotNull;
+import com.facebook.airlift.configuration.Config;
+import jakarta.validation.constraints.NotNull;
 
 public class FileResourceGroupConfig
 {

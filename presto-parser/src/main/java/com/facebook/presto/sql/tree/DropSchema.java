@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.facebook.presto.spi.analyzer.UpdateInfo;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -75,6 +76,12 @@ public final class DropSchema
     }
 
     @Override
+    public UpdateInfo getUpdateInfo()
+    {
+        return new UpdateInfo("DROP SCHEMA", schemaName.toString());
+    }
+
+    @Override
     public boolean equals(Object obj)
     {
         if (this == obj) {
@@ -92,7 +99,7 @@ public final class DropSchema
     @Override
     public int hashCode()
     {
-        return Objects.hash(schemaName, exists);
+        return Objects.hash(schemaName, exists, cascade);
     }
 
     @Override

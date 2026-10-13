@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.facebook.presto.spi.analyzer.UpdateInfo;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -27,22 +28,26 @@ public class DropColumn
 {
     private final QualifiedName table;
     private final Identifier column;
+    private final boolean tableExists;
+    private final boolean columnExists;
 
-    public DropColumn(QualifiedName table, Identifier column)
+    public DropColumn(QualifiedName table, Identifier column, boolean tableExists, boolean columnExists)
     {
-        this(Optional.empty(), table, column);
+        this(Optional.empty(), table, column, tableExists, columnExists);
     }
 
-    public DropColumn(NodeLocation location, QualifiedName table, Identifier column)
+    public DropColumn(NodeLocation location, QualifiedName table, Identifier column, boolean tableExists, boolean columnExists)
     {
-        this(Optional.of(location), table, column);
+        this(Optional.of(location), table, column, tableExists, columnExists);
     }
 
-    private DropColumn(Optional<NodeLocation> location, QualifiedName table, Identifier column)
+    private DropColumn(Optional<NodeLocation> location, QualifiedName table, Identifier column, boolean tableExists, boolean columnExists)
     {
         super(location);
         this.table = requireNonNull(table, "table is null");
         this.column = requireNonNull(column, "column is null");
+        this.tableExists = tableExists;
+        this.columnExists = columnExists;
     }
 
     public QualifiedName getTable()
@@ -53,6 +58,16 @@ public class DropColumn
     public Identifier getColumn()
     {
         return column;
+    }
+
+    public boolean isTableExists()
+    {
+        return tableExists;
+    }
+
+    public boolean isColumnExists()
+    {
+        return columnExists;
     }
 
     @Override
@@ -68,6 +83,12 @@ public class DropColumn
     }
 
     @Override
+    public UpdateInfo getUpdateInfo()
+    {
+        return new UpdateInfo("DROP COLUMN", table.toString());
+    }
+
+    @Override
     public boolean equals(Object o)
     {
         if (this == o) {
@@ -78,13 +99,15 @@ public class DropColumn
         }
         DropColumn that = (DropColumn) o;
         return Objects.equals(table, that.table) &&
-                Objects.equals(column, that.column);
+                Objects.equals(column, that.column) &&
+                Objects.equals(tableExists, that.tableExists) &&
+                Objects.equals(columnExists, that.columnExists);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(table, column);
+        return Objects.hash(table, column, tableExists, columnExists);
     }
 
     @Override
@@ -93,6 +116,8 @@ public class DropColumn
         return toStringHelper(this)
                 .add("table", table)
                 .add("column", column)
+                .add("tableExists", tableExists)
+                .add("columnExists", columnExists)
                 .toString();
     }
 }

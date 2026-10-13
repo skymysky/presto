@@ -13,19 +13,19 @@
  */
 package com.facebook.presto.connector.thrift;
 
-import com.facebook.presto.connector.thrift.util.RebindSafeMBeanServer;
+import com.facebook.airlift.bootstrap.Bootstrap;
+import com.facebook.drift.transport.netty.client.DriftNettyClientModule;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.util.RebindSafeMBeanServer;
 import com.facebook.presto.spi.ConnectorHandleResolver;
+import com.facebook.presto.spi.ConnectorSystemConfig;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorContext;
 import com.facebook.presto.spi.connector.ConnectorFactory;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.swift.codec.guice.ThriftCodecModule;
-import com.facebook.swift.service.guice.ThriftClientModule;
-import com.facebook.swift.service.guice.ThriftClientStatsModule;
+import com.facebook.presto.spi.relation.RowExpressionService;
 import com.google.inject.Injector;
 import com.google.inject.Module;
-import io.airlift.bootstrap.Bootstrap;
-import io.airlift.json.JsonModule;
+import io.netty.buffer.PooledByteBufAllocator;
 import org.weakref.jmx.guice.MBeanModule;
 
 import javax.management.MBeanServer;
@@ -61,33 +61,27 @@ public class ThriftConnectorFactory
     }
 
     @Override
-    public Connector create(String connectorId, Map<String, String> config, ConnectorContext context)
+    public Connector create(String catalogName, Map<String, String> config, ConnectorContext context)
     {
         try {
             Bootstrap app = new Bootstrap(
-                    new JsonModule(),
                     new MBeanModule(),
-                    new ThriftCodecModule(),
-                    new ThriftClientModule(),
-                    new ThriftClientStatsModule(),
+                    new DriftNettyClientModule(PooledByteBufAllocator.DEFAULT),
                     binder -> {
                         binder.bind(MBeanServer.class).toInstance(new RebindSafeMBeanServer(getPlatformMBeanServer()));
                         binder.bind(TypeManager.class).toInstance(context.getTypeManager());
+                        binder.bind(RowExpressionService.class).toInstance(context.getRowExpressionService());
+                        binder.bind(ConnectorSystemConfig.class).toInstance(context.getConnectorSystemConfig());
                     },
                     locationModule,
-                    new ThriftModule());
+                    new ThriftModule(catalogName));
 
             Injector injector = app
-                    .strictConfig()
                     .doNotInitializeLogging()
                     .setRequiredConfigurationProperties(config)
                     .initialize();
 
             return injector.getInstance(ThriftConnector.class);
-        }
-        catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted while creating connector", ie);
         }
         catch (Exception e) {
             throwIfUnchecked(e);

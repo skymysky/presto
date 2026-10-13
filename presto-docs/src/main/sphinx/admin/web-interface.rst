@@ -3,8 +3,8 @@ Web Interface
 =============
 
 Presto provides a web interface for monitoring and managing queries.
-The web interface is accessible on the Presto coordinator via HTTP,
-using the HTTP port number specified in the coordinator :ref:`config_properties`.
+The web interface is accessible on the Presto coordinator through HTTP,
+using the HTTP port number specified in the coordinator :ref:`installation/deployment:Config Properties`.
 
 The main page has a list of queries along with information like unique query ID, query text,
 query state, percentage completed, username and source from which this query originated.
@@ -17,8 +17,8 @@ The possible query states are as follows:
 * ``PLANNING`` -- Query is being planned.
 * ``STARTING`` -- Query execution is being started.
 * ``RUNNING`` -- Query has at least one running task.
-* ``BLOCKED`` -- Query is blocked and is waiting for resources (buffer space, memory, splits, etc.).
-* ``FINISHING`` -- Query is finishing (e.g. commit for autocommit queries).
+* ``BLOCKED`` -- Query is blocked and is waiting for resources (buffer space, memory, or splits).
+* ``FINISHING`` -- Query is finishing (for example, commit for autocommit queries).
 * ``FINISHED`` -- Query has finished executing and all output has been consumed.
 * ``FAILED`` -- Query execution failed.
 
@@ -33,6 +33,6 @@ The query detail page has a summary section, graphical representation of various
 query and a list of tasks. Each task ID can be clicked to get more information about that task.
 
 The summary section has a button to kill the currently running query. There are two visualizations
-available in the summary section: task execution and timeline. The full JSON documentation containing
-information and statistics about the query is available by clicking the *Raw* link. These visualizations
+available in the summary section: task execution and timeline. The full JSON document containing
+information and statistics about the query is available by clicking the *JSON* link. These visualizations
 and other statistics can be used to analyze where time is being spent for a query.

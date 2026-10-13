@@ -13,20 +13,20 @@
  */
 package com.facebook.presto.hive.s3;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.DataSize.Unit;
+import com.facebook.airlift.units.Duration;
 import com.google.common.base.StandardSystemProperty;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.units.DataSize;
-import io.airlift.units.DataSize.Unit;
-import io.airlift.units.Duration;
 import org.testng.annotations.Test;
 
 import java.io.File;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
-import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
-import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.recordDefaults;
 
 public class TestHiveS3Config
 {
@@ -39,7 +39,11 @@ public class TestHiveS3Config
                 .setS3Endpoint(null)
                 .setS3SignerType(null)
                 .setS3PathStyleAccess(false)
-                .setS3UseInstanceCredentials(true)
+                .setS3UseInstanceCredentials(false)
+                .setS3IamRole(null)
+                .setS3WebIdentityEnabled(false)
+                .setS3StorageClass(PrestoS3StorageClass.STANDARD)
+                .setS3IamRoleSessionName("presto-session")
                 .setS3SslEnabled(true)
                 .setS3SseEnabled(false)
                 .setS3SseType(PrestoS3SseType.S3)
@@ -57,7 +61,9 @@ public class TestHiveS3Config
                 .setS3MaxConnections(500)
                 .setS3StagingDirectory(new File(StandardSystemProperty.JAVA_IO_TMPDIR.value()))
                 .setPinS3ClientToCurrentRegion(false)
-                .setS3UserAgentPrefix(""));
+                .setS3UserAgentPrefix("")
+                .setS3AclType(PrestoS3AclType.PRIVATE)
+                .setSkipGlacierObjects(false));
     }
 
     @Test
@@ -69,7 +75,11 @@ public class TestHiveS3Config
                 .put("hive.s3.endpoint", "endpoint.example.com")
                 .put("hive.s3.signer-type", "S3SignerType")
                 .put("hive.s3.path-style-access", "true")
-                .put("hive.s3.use-instance-credentials", "false")
+                .put("hive.s3.use-instance-credentials", "true")
+                .put("hive.s3.iam-role", "roleArn")
+                .put("hive.s3.web.identity.auth.enabled", "true")
+                .put("hive.s3.storage-class", "INTELLIGENT_TIERING")
+                .put("hive.s3.iam-role-session-name", "roleSessionName")
                 .put("hive.s3.ssl.enabled", "false")
                 .put("hive.s3.sse.enabled", "true")
                 .put("hive.s3.sse.type", "KMS")
@@ -88,6 +98,8 @@ public class TestHiveS3Config
                 .put("hive.s3.staging-directory", "/s3-staging")
                 .put("hive.s3.pin-client-to-current-region", "true")
                 .put("hive.s3.user-agent-prefix", "user-agent-prefix")
+                .put("hive.s3.upload-acl-type", "PUBLIC_READ")
+                .put("hive.s3.skip-glacier-objects", "true")
                 .build();
 
         HiveS3Config expected = new HiveS3Config()
@@ -96,7 +108,11 @@ public class TestHiveS3Config
                 .setS3Endpoint("endpoint.example.com")
                 .setS3SignerType(PrestoS3SignerType.S3SignerType)
                 .setS3PathStyleAccess(true)
-                .setS3UseInstanceCredentials(false)
+                .setS3UseInstanceCredentials(true)
+                .setS3IamRole("roleArn")
+                .setS3WebIdentityEnabled(true)
+                .setS3StorageClass(PrestoS3StorageClass.INTELLIGENT_TIERING)
+                .setS3IamRoleSessionName("roleSessionName")
                 .setS3SslEnabled(false)
                 .setS3SseEnabled(true)
                 .setS3SseType(PrestoS3SseType.KMS)
@@ -114,7 +130,9 @@ public class TestHiveS3Config
                 .setS3MaxConnections(77)
                 .setS3StagingDirectory(new File("/s3-staging"))
                 .setPinS3ClientToCurrentRegion(true)
-                .setS3UserAgentPrefix("user-agent-prefix");
+                .setS3UserAgentPrefix("user-agent-prefix")
+                .setS3AclType(PrestoS3AclType.PUBLIC_READ)
+                .setSkipGlacierObjects(true);
 
         assertFullMapping(properties, expected);
     }

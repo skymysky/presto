@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.spi;
 
+import com.facebook.presto.spi.constraints.TableConstraint;
+import com.facebook.presto.spi.constraints.TableConstraintsHolder;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -20,7 +23,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
+import static java.util.Objects.requireNonNull;
 
 public class ConnectorTableMetadata
 {
@@ -28,6 +33,7 @@ public class ConnectorTableMetadata
     private final Optional<String> comment;
     private final List<ColumnMetadata> columns;
     private final Map<String, Object> properties;
+    private final TableConstraintsHolder tableConstraintsHolder;
 
     public ConnectorTableMetadata(SchemaTableName table, List<ColumnMetadata> columns)
     {
@@ -36,25 +42,25 @@ public class ConnectorTableMetadata
 
     public ConnectorTableMetadata(SchemaTableName table, List<ColumnMetadata> columns, Map<String, Object> properties)
     {
-        this(table, columns, properties, Optional.empty());
+        this(table, columns, properties, Optional.empty(), emptyList(), Collections.emptyMap());
     }
 
     public ConnectorTableMetadata(SchemaTableName table, List<ColumnMetadata> columns, Map<String, Object> properties, Optional<String> comment)
     {
-        if (table == null) {
-            throw new NullPointerException("table is null or empty");
-        }
-        if (columns == null) {
-            throw new NullPointerException("columns is null");
-        }
-        if (comment == null) {
-            throw new NullPointerException("comment is null");
-        }
+        this(table, columns, properties, comment, emptyList(), Collections.emptyMap());
+    }
+
+    public ConnectorTableMetadata(SchemaTableName table, List<ColumnMetadata> columns, Map<String, Object> properties, Optional<String> comment, List<TableConstraint<String>> tableConstraints, Map<String, ColumnHandle> columnNameToHandleAssignments)
+    {
+        requireNonNull(table, "table is null");
+        requireNonNull(columns, "columns is null");
+        requireNonNull(comment, "comment is null");
 
         this.table = table;
         this.columns = Collections.unmodifiableList(new ArrayList<>(columns));
         this.properties = Collections.unmodifiableMap(new LinkedHashMap<>(properties));
         this.comment = comment;
+        this.tableConstraintsHolder = new TableConstraintsHolder(tableConstraints, columnNameToHandleAssignments);
     }
 
     public SchemaTableName getTable()
@@ -77,12 +83,18 @@ public class ConnectorTableMetadata
         return comment;
     }
 
+    public TableConstraintsHolder getTableConstraintsHolder()
+    {
+        return tableConstraintsHolder;
+    }
+
     @Override
     public String toString()
     {
         StringBuilder sb = new StringBuilder("ConnectorTableMetadata{");
         sb.append("table=").append(table);
         sb.append(", columns=").append(columns);
+        sb.append(", tableConstraints=").append(tableConstraintsHolder.getTableConstraints());
         sb.append(", properties=").append(properties);
         comment.ifPresent(value -> sb.append(", comment='").append(value).append("'"));
         sb.append('}');

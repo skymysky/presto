@@ -6,7 +6,11 @@ This connector allows the use of MongoDB collections as tables in Presto.
 
 .. note::
 
-    MongoDB 2.6+ is supported although it is highly recommend to use 3.0 or later.
+    This connector uses MongoDB Java Sync Driver version 5.12.0. For the MongoDB
+    server versions supported by that driver, see the driver compatibility matrix
+    in the MongoDB documentation:
+
+    https://www.mongodb.com/docs/drivers/compatibility/?driver-language=java&java-driver-framework=java-sync#mongodb-server-compatibility-5
 
 Configuration
 -------------
@@ -34,29 +38,38 @@ Configuration Properties
 
 The following configuration properties are available:
 
-===================================== ==============================================================
-Property Name                         Description
-===================================== ==============================================================
-``mongodb.seeds``                     List of all mongod servers
-``mongodb.schema-collection``         A collection which contains schema information
-``mongodb.credentials``               List of credentials
-``mongodb.min-connections-per-host``  The minimum size of the connection pool per host
-``mongodb.connections-per-host``      The maximum size of the connection pool per host
-``mongodb.max-wait-time``             The maximum wait time
-``mongodb.connection-timeout``        The socket connect timeout
-``mongodb.socket-timeout``            The socket timeout
-``mongodb.socket-keep-alive``         Whether keep-alive is enabled on each socket
-``mongodb.ssl.enabled``               Use TLS/SSL for connections to mongod/mongos
-``mongodb.read-preference``           The read preference
-``mongodb.write-concern``             The write concern
+===================================== ============================================================== ===========
+Property Name                         Description                                                    Default
+===================================== ============================================================== ===========
+``mongodb.seeds``                     List of all MongoDB servers
+``mongodb.schema-collection``         A collection which contains schema information                 ``_schema``
+``mongodb.credentials``               Authentication credential
+``mongodb.min-connections-per-host``  The minimum size of the connection pool per host               ``0``
+``mongodb.connections-per-host``      The maximum size of the connection pool per host               ``100``
+``mongodb.max-wait-time``             The maximum wait time                                          ``120000ms``
+``mongodb.connection-timeout``        The socket connect timeout                                     ``10000ms``
+``mongodb.socket-timeout``            The socket timeout                                             ``0ms``
+``mongodb.socket-keep-alive``         Whether keep-alive is enabled on each socket                   ``false``
+``mongodb.tls.enabled``               Use TLS/SSL for connections to MongoDB                         ``false``
+``mongodb.tls.keystore-path``         Path to the keystore file for client certificates
+``mongodb.tls.keystore-password``     Password for the keystore file
+``mongodb.tls.truststore-path``       Path to the truststore file for trusted Certificate
+                                      Authorities (CA)
+``mongodb.tls.truststore-password``   Password for the truststore file
+``mongodb.read-preference``           The read preference                                             ``primary``
+``mongodb.write-concern``             The write concern                                               ``acknowledged``
 ``mongodb.required-replica-set``      The required replica set name
 ``mongodb.cursor-batch-size``         The number of elements to return in a batch
-===================================== ==============================================================
+``case-sensitive-name-matching``      Enable case-sensitive identifier support for schema,
+                                      table, and column names for the connector. When disabled,
+                                      names are matched case-insensitively using lowercase
+                                      normalization. Default is ``false``
+===================================== ============================================================== ===========
 
 ``mongodb.seeds``
 ^^^^^^^^^^^^^^^^^
 
-Comma-separated list of ``hostname[:port]`` all mongod servers in the same replica set or a list of mongos servers in the same sharded cluster. If port is not specified, port 27017 will be used.
+Comma-separated list of ``hostname[:port]`` all MongoDB servers in the same replica set or a list of MongoDB servers in the same sharded cluster. If port is not specified, port 27017 will be used.
 
 This property is required; there is no default and at least one seed must be defined.
 
@@ -72,7 +85,7 @@ This property is optional; the default is ``_schema``.
 ``mongodb.credentials``
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-A comma separated list of ``username:password@collection`` credentials
+Authentication credential in the format ``username:password@authenticationDatabase``.
 
 This property is optional; no default value.
 
@@ -119,12 +132,45 @@ This flag controls the socket keep alive feature that keeps a connection alive t
 
 This property is optional; the default is ``false``.
 
-``mongodb.ssl.enabled``
-^^^^^^^^^^^^^^^^^^^^^^^^
+``mongodb.tls.enabled``
+^^^^^^^^^^^^^^^^^^^^^^^
 
-This flag enables SSL connections to MongoDB servers.
+This flag enables TLS/SSL connections to MongoDB servers.
 
-This property is optional; the default is ``false``.
+This property is optional and defaults to ``false``. When enabled, you can optionally configure client certificate authentication and custom certificate authorities using the related TLS properties.
+
+.. note::
+
+    The ``mongodb.ssl.enabled`` property is deprecated and will be removed in a future version.
+    Use ``mongodb.tls.enabled`` instead. The old property name is supported for backward compatibility.
+
+``mongodb.tls.keystore-path``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Path to the Java KeyStore file containing the client certificate and private key for TLS authentication. The connector supports both Java KeyStore (JKS) format and Privacy-Enhanced Mail (PEM) file format.
+
+This property is optional and only used when ``mongodb.tls.enabled`` is ``true``. Unlike the truststore, there is no default keystore - you must provide one if client certificate authentication is required.
+
+``mongodb.tls.keystore-password``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Password for the keystore file specified in ``mongodb.tls.keystore-path``.
+
+This property is optional and only used when a keystore path is specified.
+
+``mongodb.tls.truststore-path``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Path to the Java TrustStore file containing the trusted certificate authorities for TLS connections. The connector supports both Java KeyStore (JKS) format and Privacy-Enhanced Mail (PEM) file format.
+
+This property is optional and only used when ``mongodb.tls.enabled`` is ``true``. If not specified, the default system truststore will be used.
+
+``mongodb.tls.truststore-password``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Password for the truststore file specified in ``mongodb.tls.truststore-path``.
+
+This property is optional and only used when a truststore path is specified.
 
 ``mongodb.read-preference``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -138,8 +184,7 @@ This property is optional; the default is ``PRIMARY``.
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The write concern to use. The available values are
-``ACKNOWLEDGED``, ``FSYNC_SAFE``, ``FSYNCED``, ``JOURNAL_SAFEY``, ``JOURNALED``, ``MAJORITY``,
-``NORMAL``, ``REPLICA_ACKNOWLEDGED``, ``REPLICAS_SAFE`` and ``UNACKNOWLEDGED``.
+``ACKNOWLEDGED``, ``JOURNALED``, ``MAJORITY``, ``UNACKNOWLEDGED``, ``W1``, ``W2`` and ``W3``.
 
 This property is optional; the default is ``ACKNOWLEDGED``.
 
@@ -166,6 +211,132 @@ If batchSize is negative, it will limit of number objects returned, that fit wit
 
 This property is optional; the default is ``0``.
 
+.. _tls-ca-definition-label:
+
+TLS/SSL Configuration
+---------------------
+
+The MongoDB connector supports comprehensive TLS/SSL configuration for secure connections to MongoDB clusters.
+
+Basic TLS Configuration
+^^^^^^^^^^^^^^^^^^^^^^^
+
+To enable basic TLS connections, set the following property:
+
+.. code-block:: none
+
+    mongodb.tls.enabled=true
+
+This enables TLS using the system's default certificate authorities.
+
+Advanced TLS Configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For advanced TLS configuration including client certificate authentication and custom certificate authorities, use the following properties:
+
+.. code-block:: none
+
+    mongodb.tls.enabled=true
+    mongodb.tls.keystore-path=/path/to/client.jks
+    mongodb.tls.keystore-password=keystore_password
+    mongodb.tls.truststore-path=/path/to/truststore.jks
+    mongodb.tls.truststore-password=truststore_password
+
+Certificate Format Support
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The connector supports both Java KeyStore (JKS) and PEM file formats for certificates:
+
+- **Java KeyStore (JKS)**: Traditional Java keystore format
+- **PEM Files**: Privacy-Enhanced Mail format, commonly used with OpenSSL
+
+The connector automatically detects the format and handles the certificates appropriately.
+
+Configuring the MongoDB Connector to Use a TLS CA File
+------------------------------------------------------
+
+A TLS CA file may be required to connect securely to a MongoDB cluster hosted on DigitalOcean. MongoDB clusters are hosted on multiple nodes, each with its own hostname. Cluster hostnames do not resolve using standard ``dig`` requests to the hostname in the connection string.
+
+Retrieve the Node Hostnames
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To retrieve the node hostnames of a cluster using ``dig``, specify the ``srv`` record type in the request and prepend ``_mongodb._tcp.`` to the hostname in the connection string, as shown below:
+
+.. code-block:: bash
+
+    dig srv _mongodb._tcp.<cluster-hostname>
+
+For example, a properly formatted ``dig`` request would look like this:
+
+.. code-block:: bash
+
+    dig srv _mongodb._tcp.mongodb-prod-cluster-ba6e9b05.mongo.ondigitalocean.com
+
+The ``dig`` command returns the actual hosts (in the **Answer Section**) that you can use to connect to MongoDB through Presto. The regular hostname won’t work and will result in a ``host not found`` error.
+
+Set Up a TLS CA File
+^^^^^^^^^^^^^^^^^^^^
+
+The following steps were developed using CentOS. Adapt them as needed for your environment.
+
+1. Create the certificate file:
+
+   .. code-block:: bash
+
+       touch /etc/pki/ca-trust/source/anchors/mongo.prod-cluster.crt
+
+2. Paste the contents of the TLS CA file into the newly created file.
+
+3. Update the trust store by running the following command:
+
+   .. code-block:: bash
+
+       update-ca-trust
+
+4. Verify the setup by running the following command:
+
+   .. code-block:: bash
+
+       openssl s_client -connect <host-found-with-dig-above>:27017 < /dev/null
+
+   The output should include ``CONNECTED`` and ``Verification: OK``, indicating the SSL connection is properly configured.
+
+Configure the Catalog
+^^^^^^^^^^^^^^^^^^^^^
+
+To configure a MongoDB catalog for this cluster, follow these steps:
+
+1. Create the catalog configuration file:
+
+   .. code-block:: bash
+
+       touch etc/catalog/mongodb.properties
+
+2. Edit the file and include the host found using ``dig`` in `Retrieve the Node Hostnames <#retrieve-the-node-hostnames>`_. For example:
+
+   .. code-block:: none
+
+       connector.name=mongodb
+       mongodb.seeds=<host-found-with-dig-above>:27017
+       mongodb.credentials=<user>:<password>@<mongodb-auth-source>
+       mongodb.tls.enabled=true
+       mongodb.tls.keystore-path=/path/to/client.jks
+       mongodb.tls.keystore-password=keystore_password
+       mongodb.tls.truststore-path=/path/to/truststore.jks
+       mongodb.tls.truststore-password=truststore_password
+       mongodb.required-replica-set=<mongodb-replica-set>
+
+Run Queries
+^^^^^^^^^^^
+
+After starting the Presto server, you should be able to connect to the catalog and execute queries. For instance:
+
+.. code-block:: sql
+
+    SELECT name
+    FROM users
+    WHERE _id = ObjectId('66fe8898c4ce1100c811cbe0');
+
 .. _table-definition-label:
 
 Table Definition
@@ -187,7 +358,7 @@ A schema collection consists of a MongoDB document for a table.
         "table": ...,
         "fields": [
               { "name" : ...,
-                "type" : "varchar|bigint|boolean|double|date|array<bigint>|...",
+                "type" : "varchar|bigint|boolean|double|date|array(bigint)|...",
                 "hidden" : false },
                 ...
             ]
@@ -221,6 +392,34 @@ Field           Required  Type      Description
 
 There is no limit on field descriptions for either key or message.
 
+JSON Type Handling
+------------------
+
+The connector supports writing ``json`` columns by converting their contents to BSON
+using ``.parse(...)``.
+
+For example:
+
+.. code-block:: sql
+
+    CREATE TABLE orders (
+        orderkey bigint,
+        orderstatus varchar,
+        totalprice double,
+        orderdate date,
+        metadata json
+    );
+
+    INSERT INTO orders VALUES (
+        3,
+        'processing',
+        150.0,
+        current_date,
+        JSON '{"created_by": "admin", "priority": "high"}'
+    );
+
+The JSON string must be well-formed. If it's not, the insert will fail with a parsing error.
+
 ObjectId
 --------
 
@@ -237,7 +436,7 @@ MongoDB collection has the special field ``_id``. The connector tries to follow 
 
     INSERT INTO orders VALUES(1, 'bad', 50.0, current_date);
     INSERT INTO orders VALUES(2, 'good', 100.0, current_date);
-    SELECT _id, * FROM orders3;
+    SELECT _id, * FROM orders;
 
 .. code-block:: none
 
@@ -249,7 +448,7 @@ MongoDB collection has the special field ``_id``. The connector tries to follow 
 
 .. code-block:: sql
 
-    SELECT _id, * FROM orders3 WHERE _id = ObjectId('55b151633864d6438c61a9ce');
+    SELECT _id, * FROM orders WHERE _id = ObjectId('55b151633864d6438c61a9ce');
 
 .. code-block:: none
 
@@ -261,3 +460,26 @@ MongoDB collection has the special field ``_id``. The connector tries to follow 
 .. note::
 
     Unfortunately, there is no way to represent ``_id`` fields more fancy like ``55b151633864d6438c61a9ce``.
+
+SQL support
+-----------
+
+ALTER TABLE
+^^^^^^^^^^^
+
+.. code-block:: sql
+
+    ALTER TABLE mongodb.admin.sample_table ADD COLUMN new_col INT;
+    ALTER TABLE mongodb.admin.sample_table DROP COLUMN new_col;
+    ALTER TABLE mongodb.admin.sample_table RENAME COLUMN is_active TO is_enabled;
+    ALTER TABLE mongodb.admin.sample_table RENAME TO renamed_table;
+
+.. note:: Presto does not support altering the data type of a column directly with the ALTER TABLE command.
+
+ .. code-block:: sql
+
+   ALTER TABLE mongodb.admin.users ALTER COLUMN age TYPE BIGINT;
+
+ returns an error similar to the following:
+
+ ``Query 20240720_123348_00014_v7vrn failed: line 1:55: mismatched input 'int'. Expecting: 'FUNCTION', 'SCHEMA', 'TABLE'``

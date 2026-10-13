@@ -13,14 +13,20 @@
  */
 package com.facebook.presto.orc.metadata;
 
+import com.facebook.presto.orc.DwrfEncryptionProvider;
+import com.facebook.presto.orc.DwrfKeyProvider;
 import com.facebook.presto.orc.OrcCorruptionException;
+import com.facebook.presto.orc.OrcDataSource;
 import com.facebook.presto.orc.OrcDataSourceId;
+import com.facebook.presto.orc.OrcDecompressor;
 import com.facebook.presto.orc.metadata.PostScript.HiveWriterVersion;
 import com.facebook.presto.orc.metadata.statistics.HiveBloomFilter;
+import com.facebook.presto.orc.protobuf.InvalidProtocolBufferException;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
+import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -40,72 +46,77 @@ public class ExceptionWrappingMetadataReader
 
     @Override
     public PostScript readPostScript(byte[] data, int offset, int length)
-            throws OrcCorruptionException
+            throws OrcCorruptionException, IOException
     {
         try {
             return delegate.readPostScript(data, offset, length);
         }
-        catch (IOException | RuntimeException e) {
+        catch (InvalidProtocolBufferException e) {
             throw new OrcCorruptionException(e, orcDataSourceId, "Invalid postscript");
         }
     }
 
     @Override
     public Metadata readMetadata(HiveWriterVersion hiveWriterVersion, InputStream inputStream)
-            throws OrcCorruptionException
+            throws OrcCorruptionException, IOException
     {
         try {
             return delegate.readMetadata(hiveWriterVersion, inputStream);
         }
-        catch (IOException | RuntimeException e) {
+        catch (InvalidProtocolBufferException e) {
             throw new OrcCorruptionException(e, orcDataSourceId, "Invalid file metadata");
         }
     }
 
     @Override
-    public Footer readFooter(HiveWriterVersion hiveWriterVersion, InputStream inputStream)
-            throws OrcCorruptionException
+    public Footer readFooter(HiveWriterVersion hiveWriterVersion,
+            InputStream inputStream,
+            DwrfEncryptionProvider dwrfEncryptionProvider,
+            DwrfKeyProvider dwrfKeyProvider,
+            OrcDataSource orcDataSource,
+            Optional<OrcDecompressor> decompressor)
+            throws OrcCorruptionException, IOException
     {
         try {
-            return delegate.readFooter(hiveWriterVersion, inputStream);
+            return delegate.readFooter(hiveWriterVersion, inputStream, dwrfEncryptionProvider, dwrfKeyProvider, orcDataSource, decompressor);
         }
-        catch (IOException | RuntimeException e) {
+        catch (InvalidProtocolBufferException e) {
             throw new OrcCorruptionException(e, orcDataSourceId, "Invalid file footer");
         }
     }
 
     @Override
-    public StripeFooter readStripeFooter(List<OrcType> types, InputStream inputStream)
+    public StripeFooter readStripeFooter(OrcDataSourceId orcDataSourceId, List<OrcType> types, InputStream inputStream)
             throws IOException
     {
         try {
-            return delegate.readStripeFooter(types, inputStream);
+            return delegate.readStripeFooter(orcDataSourceId, types, inputStream);
         }
-        catch (IOException e) {
+        catch (InvalidProtocolBufferException e) {
             throw new OrcCorruptionException(e, orcDataSourceId, "Invalid stripe footer");
         }
     }
 
     @Override
-    public List<RowGroupIndex> readRowIndexes(HiveWriterVersion hiveWriterVersion, InputStream inputStream)
-            throws OrcCorruptionException
+    public List<RowGroupIndex> readRowIndexes(HiveWriterVersion hiveWriterVersion, InputStream inputStream, List<HiveBloomFilter> bloomFilters)
+            throws OrcCorruptionException, IOException
     {
         try {
-            return delegate.readRowIndexes(hiveWriterVersion, inputStream);
+            return delegate.readRowIndexes(hiveWriterVersion, inputStream, bloomFilters);
         }
-        catch (IOException | RuntimeException e) {
+        catch (InvalidProtocolBufferException e) {
             throw new OrcCorruptionException(e, orcDataSourceId, "Invalid stripe row index");
         }
     }
 
     @Override
     public List<HiveBloomFilter> readBloomFilterIndexes(InputStream inputStream)
-            throws OrcCorruptionException
+            throws OrcCorruptionException, IOException
     {
         try {
             return delegate.readBloomFilterIndexes(inputStream);
         }
-        catch (IOException | RuntimeException e) {
+        catch (InvalidProtocolBufferException e) {
             throw new OrcCorruptionException(e, orcDataSourceId, "Invalid bloom filter");
         }
     }

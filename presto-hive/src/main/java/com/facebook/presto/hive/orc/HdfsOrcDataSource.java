@@ -13,15 +13,16 @@
  */
 package com.facebook.presto.hive.orc;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.hive.FileFormatDataSourceStats;
 import com.facebook.presto.orc.AbstractOrcDataSource;
 import com.facebook.presto.orc.OrcDataSourceId;
 import com.facebook.presto.spi.PrestoException;
-import io.airlift.units.DataSize;
 import org.apache.hadoop.fs.FSDataInputStream;
 
 import java.io.IOException;
 
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_MISSING_DATA;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNKNOWN_ERROR;
 import static java.lang.String.format;
@@ -57,7 +58,6 @@ public class HdfsOrcDataSource
 
     @Override
     protected void readInternal(long position, byte[] buffer, int bufferOffset, int bufferLength)
-            throws IOException
     {
         try {
             long readStart = System.nanoTime();
@@ -69,9 +69,12 @@ public class HdfsOrcDataSource
             throw e;
         }
         catch (Exception e) {
-            String message = format("Error reading from %s at position %s", this, position);
+            String message = format("Error reading from %s at position %s. ", this, position);
             if (e.getClass().getSimpleName().equals("BlockMissingException")) {
                 throw new PrestoException(HIVE_MISSING_DATA, message, e);
+            }
+            if (e instanceof IOException) {
+                throw new PrestoException(HIVE_FILESYSTEM_ERROR, message + e.getMessage(), e);
             }
             throw new PrestoException(HIVE_UNKNOWN_ERROR, message, e);
         }

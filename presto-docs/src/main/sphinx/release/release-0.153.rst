@@ -8,10 +8,10 @@ General Changes
 * Fix incorrect results for grouping sets when ``task.concurrency`` is greater than one.
 * Fix silent numeric overflow when casting ``INTEGER`` to large ``DECIMAL`` types.
 * Fix issue where ``GROUP BY ()`` would produce no results if the input had no rows.
-* Fix null handling in :func:`array_distinct` when applied to the ``array(bigint)`` type.
-* Fix handling of ``-2^63`` as the element index for :func:`json_array_get`.
+* Fix null handling in :func:`!array_distinct` when applied to the ``array(bigint)`` type.
+* Fix handling of ``-2^63`` as the element index for :func:`!json_array_get`.
 * Fix correctness issue when the input to ``TRY_CAST`` evaluates to null.
-  For types such as booleans, numbers, dates, timestamps, etc., rather than
+  For types such as booleans, numbers, dates, or timestamps, rather than
   returning null, a default value specific to the type such as
   ``false``, ``0`` or ``1970-01-01`` was returned.
 * Fix potential thread deadlock in coordinator.
@@ -27,11 +27,11 @@ General Changes
 * Fix query stats to not include queued time in planning time.
 * Fix query completion event to log final stats for the query.
 * Fix spurious log messages when queries are torn down.
-* Remove broken ``%w`` specifier for :func:`date_format` and :func:`date_parse`.
+* Remove broken ``%w`` specifier for :func:`!date_format` and :func:`!date_parse`.
 * Improve performance of :ref:`array_type` when underlying data is dictionary encoded.
 * Improve performance of outer joins with non-equality criteria.
 * Require task concurrency and task writer count to be a power of two.
-* Use nulls-last ordering for :func:`array_sort`.
+* Use nulls-last ordering for :func:`!array_sort`.
 * Validate that ``TRY`` is used with exactly one argument.
 * Allow running Presto with early-access Java versions.
 * Add :doc:`/connector/accumulo`.
@@ -45,17 +45,17 @@ Functions and Language Features
 * Add initial support for correlated subqueries.
 * Add execution support for prepared statements.
 * Add ``DOUBLE PRECISION`` as an alias for the ``DOUBLE`` type.
-* Add :func:`typeof` for discovering expression types.
-* Add decimal support to :func:`avg`, :func:`ceil`, :func:`floor`, :func:`round`,
-  :func:`truncate`, :func:`abs`, :func:`mod` and :func:`sign`.
-* Add :func:`shuffle` function for arrays.
+* Add :func:`!typeof` for discovering expression types.
+* Add decimal support to :func:`!avg`, :func:`!ceil`, :func:`!floor`, :func:`!round`,
+  :func:`!truncate`, :func:`!abs`, :func:`!mod` and :func:`!sign`.
+* Add :func:`!shuffle` function for arrays.
 
 Pluggable Resource Groups
 -------------------------
 
 Resource group management is now pluggable. A ``Plugin`` can
-provide management factories via ``getResourceGroupConfigurationManagerFactories()``
-and the factory can be enabled via the ``etc/resource-groups.properties``
+provide management factories through ``getResourceGroupConfigurationManagerFactories()``
+and the factory can be enabled with the ``etc/resource-groups.properties``
 configuration file by setting the ``resource-groups.configuration-manager``
 property. See the ``presto-resource-group-managers`` plugin for an example
 and :doc:`/admin/resource-groups` for more details.

@@ -13,12 +13,11 @@
  */
 package com.facebook.presto.tpcds;
 
+import com.facebook.airlift.log.Logger;
+import com.facebook.airlift.log.Logging;
 import com.facebook.presto.Session;
-import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.tests.DistributedQueryRunner;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.log.Logger;
-import io.airlift.log.Logging;
 
 import java.util.Map;
 
@@ -40,7 +39,13 @@ public final class TpcdsQueryRunner
         return createQueryRunner(extraProperties, ImmutableMap.of());
     }
 
-    public static DistributedQueryRunner createQueryRunner(Map<String, String> extraProperties, Map<String, String> coordinatorProperties)
+    public static DistributedQueryRunner createQueryRunner(Map<String, String> extraProperties, Map<String, String> tpcdsProperties)
+            throws Exception
+    {
+        return createQueryRunner(extraProperties, tpcdsProperties, ImmutableMap.of());
+    }
+
+    public static DistributedQueryRunner createQueryRunner(Map<String, String> extraProperties, Map<String, String> tpcdsProperties, Map<String, String> coordinatorProperties)
             throws Exception
     {
         Session session = testSessionBuilder()
@@ -49,11 +54,15 @@ public final class TpcdsQueryRunner
                 .setSchema("sf1")
                 .build();
 
-        DistributedQueryRunner queryRunner = new DistributedQueryRunner(session, 4, extraProperties, coordinatorProperties, new SqlParserOptions());
+        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(session)
+                .setNodeCount(4)
+                .setExtraProperties(extraProperties)
+                .setCoordinatorProperties(coordinatorProperties)
+                .build();
 
         try {
             queryRunner.installPlugin(new TpcdsPlugin());
-            queryRunner.createCatalog("tpcds", "tpcds");
+            queryRunner.createCatalog("tpcds", "tpcds", tpcdsProperties);
             return queryRunner;
         }
         catch (Exception e) {
@@ -66,7 +75,9 @@ public final class TpcdsQueryRunner
             throws Exception
     {
         Logging.initialize();
-        DistributedQueryRunner queryRunner = createQueryRunner(ImmutableMap.of("http-server.http.port", "8080"));
+        DistributedQueryRunner queryRunner = createQueryRunner(ImmutableMap.of(
+                "http-server.http.port", "8080",
+                "use-connector-provided-serialization-codecs", "true"));
         Thread.sleep(10);
         Logger log = Logger.get(TpcdsQueryRunner.class);
         log.info("======== SERVER STARTED ========");

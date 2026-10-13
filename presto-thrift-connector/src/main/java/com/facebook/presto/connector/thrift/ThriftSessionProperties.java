@@ -13,12 +13,14 @@
  */
 package com.facebook.presto.connector.thrift;
 
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.session.PropertyMetadata;
 import com.google.common.collect.ImmutableList;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import java.util.List;
+
+import static com.facebook.presto.spi.session.PropertyMetadata.booleanProperty;
 
 /**
  * Internal session properties are those defined by the connector itself.
@@ -26,12 +28,22 @@ import java.util.List;
  */
 public final class ThriftSessionProperties
 {
+    private static final String SET_THRIFT_IDENTITY_HEADER = "use_thrift_identity_header";
     private final List<PropertyMetadata<?>> sessionProperties;
 
     @Inject
     public ThriftSessionProperties(ThriftConnectorConfig config)
     {
-        sessionProperties = ImmutableList.of();
+        sessionProperties = ImmutableList.of(booleanProperty(
+                SET_THRIFT_IDENTITY_HEADER,
+                "Thrift identity is used when set to true",
+                config.getUseIdentityThriftHeader(),
+                false));
+    }
+
+    public static boolean isUseIdentityThriftHeader(ConnectorSession session)
+    {
+        return session.getProperty(SET_THRIFT_IDENTITY_HEADER, Boolean.class);
     }
 
     public List<PropertyMetadata<?>> getSessionProperties()

@@ -13,21 +13,24 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.presto.common.RuntimeStats;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.TupleDomainOrcPredicate.ColumnReference;
 import com.facebook.presto.orc.metadata.OrcMetadataReader;
+import com.facebook.presto.orc.metadata.statistics.BloomFilter;
 import com.facebook.presto.orc.metadata.statistics.ColumnStatistics;
 import com.facebook.presto.orc.metadata.statistics.HiveBloomFilter;
+import com.facebook.presto.orc.metadata.statistics.IntegerColumnStatistics;
 import com.facebook.presto.orc.metadata.statistics.IntegerStatistics;
 import com.facebook.presto.orc.proto.OrcProto;
 import com.facebook.presto.orc.protobuf.CodedInputStream;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.primitives.Longs;
 import io.airlift.slice.Slice;
-import org.apache.hive.common.util.BloomFilter;
+import org.apache.hadoop.hive.common.type.Timestamp;
 import org.testng.annotations.Test;
 
 import java.io.ByteArrayInputStream;
@@ -35,7 +38,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
-import java.sql.Timestamp;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
@@ -43,15 +45,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.orc.TupleDomainOrcPredicate.checkInBloomFilter;
 import static com.facebook.presto.orc.TupleDomainOrcPredicate.extractDiscreteValues;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.airlift.slice.Slices.wrappedBuffer;
 import static org.testng.Assert.assertEquals;
@@ -77,7 +79,6 @@ public class TestOrcBloomFilters
 
     @Test
     public void testHiveBloomFilterSerde()
-            throws Exception
     {
         BloomFilter bloomFilter = new BloomFilter(1_000_000L, 0.05);
 
@@ -122,7 +123,7 @@ public class TestOrcBloomFilters
 
         // Read through method
         InputStream inputStream = new ByteArrayInputStream(bytes);
-        OrcMetadataReader metadataReader = new OrcMetadataReader();
+        OrcMetadataReader metadataReader = new OrcMetadataReader(new RuntimeStats());
         List<HiveBloomFilter> bloomFilters = metadataReader.readBloomFilterIndexes(inputStream);
 
         assertEquals(bloomFilters.size(), 1);
@@ -182,7 +183,6 @@ public class TestOrcBloomFilters
 
     @Test
     public void testBloomFilterPredicateValuesExisting()
-            throws Exception
     {
         BloomFilter bloomFilter = new BloomFilter(TEST_VALUES.size() * 10, 0.01);
 
@@ -203,7 +203,7 @@ public class TestOrcBloomFilters
                 bloomFilter.addString(((Slice) o).toStringUtf8());
             }
             else if (o instanceof Timestamp) {
-                bloomFilter.addLong(((Timestamp) o).getTime());
+                bloomFilter.addLong(((Timestamp) o).toEpochMilli());
             }
             else if (o instanceof Double) {
                 bloomFilter.addDouble((Double) o);
@@ -224,7 +224,6 @@ public class TestOrcBloomFilters
 
     @Test
     public void testBloomFilterPredicateValuesNonExisting()
-            throws Exception
     {
         BloomFilter bloomFilter = new BloomFilter(TEST_VALUES.size() * 10, 0.01);
 
@@ -239,7 +238,6 @@ public class TestOrcBloomFilters
 
     @Test
     public void testExtractValuesFromSingleDomain()
-            throws Exception
     {
         Map<Type, Object> testValues = ImmutableMap.<Type, Object>builder()
                 .put(BOOLEAN, true)
@@ -262,7 +260,6 @@ public class TestOrcBloomFilters
     @Test
     // simulate query on a 2 columns where 1 is used as part of the where, with and without bloom filter
     public void testMatches()
-            throws Exception
     {
         // stripe column
         Domain testingColumnHandleDomain = Domain.singleValue(BIGINT, 1234L);
@@ -278,8 +275,8 @@ public class TestOrcBloomFilters
                 .add(new ColumnReference<>(COLUMN_1, 1, BIGINT))
                 .build();
 
-        TupleDomainOrcPredicate<String> predicate = new TupleDomainOrcPredicate<>(effectivePredicate, columnReferences, true);
-        TupleDomainOrcPredicate<String> emptyPredicate = new TupleDomainOrcPredicate<>(emptyEffectivePredicate, columnReferences, true);
+        TupleDomainOrcPredicate<String> predicate = new TupleDomainOrcPredicate<>(effectivePredicate, columnReferences, true, Optional.empty());
+        TupleDomainOrcPredicate<String> emptyPredicate = new TupleDomainOrcPredicate<>(emptyEffectivePredicate, columnReferences, true, Optional.empty());
 
         // assemble a matching and a non-matching bloom filter
         HiveBloomFilter hiveBloomFilter = new HiveBloomFilter(new BloomFilter(1000, 0.01));
@@ -287,41 +284,26 @@ public class TestOrcBloomFilters
         hiveBloomFilter.addLong(1234);
         OrcProto.BloomFilter orcBloomFilter = toOrcBloomFilter(hiveBloomFilter);
 
-        Map<Integer, ColumnStatistics> matchingStatisticsByColumnIndex = ImmutableMap.of(0, new ColumnStatistics(
+        Map<Integer, ColumnStatistics> matchingStatisticsByColumnIndex = ImmutableMap.of(0, new IntegerColumnStatistics(
                 null,
-                0,
-                null,
-                new IntegerStatistics(10L, 2000L),
+                toHiveBloomFilter(orcBloomFilter),
                 null,
                 null,
-                null,
-                null,
-                null,
-                toHiveBloomFilter(orcBloomFilter)));
+                new IntegerStatistics(10L, 2000L, null)));
 
-        Map<Integer, ColumnStatistics> nonMatchingStatisticsByColumnIndex = ImmutableMap.of(0, new ColumnStatistics(
+        Map<Integer, ColumnStatistics> nonMatchingStatisticsByColumnIndex = ImmutableMap.of(0, new IntegerColumnStatistics(
                 null,
-                0,
-                null,
-                new IntegerStatistics(10L, 2000L),
+                toHiveBloomFilter(emptyOrcBloomFilter),
                 null,
                 null,
-                null,
-                null,
-                null,
-                toHiveBloomFilter(emptyOrcBloomFilter)));
+                new IntegerStatistics(10L, 2000L, null)));
 
-        Map<Integer, ColumnStatistics> withoutBloomFilterStatisticsByColumnIndex = ImmutableMap.of(0, new ColumnStatistics(
-                null,
-                0,
-                null,
-                new IntegerStatistics(10L, 2000L),
+        Map<Integer, ColumnStatistics> withoutBloomFilterStatisticsByColumnIndex = ImmutableMap.of(0, new IntegerColumnStatistics(
                 null,
                 null,
                 null,
                 null,
-                null,
-                null));
+                new IntegerStatistics(10L, 2000L, null)));
 
         assertTrue(predicate.matches(1L, matchingStatisticsByColumnIndex));
         assertTrue(predicate.matches(1L, withoutBloomFilterStatisticsByColumnIndex));

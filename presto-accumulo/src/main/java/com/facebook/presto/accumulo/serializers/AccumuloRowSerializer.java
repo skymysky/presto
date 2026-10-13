@@ -14,19 +14,17 @@
 package com.facebook.presto.accumulo.serializers;
 
 import com.facebook.presto.accumulo.Types;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeUtils;
-import com.facebook.presto.spi.type.VarcharType;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeUtils;
+import com.facebook.presto.common.type.VarcharType;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Value;
 import org.apache.hadoop.io.Text;
 
-import java.io.IOException;
 import java.sql.Date;
 import java.sql.Time;
 import java.sql.Timestamp;
@@ -103,10 +101,8 @@ public interface AccumuloRowSerializer
      * Deserialize the given Accumulo entry, retrieving data for the Presto column.
      *
      * @param entry Entry to deserialize
-     * @throws IOException If an IO error occurs during deserialization
      */
-    void deserialize(Entry<Key, Value> entry)
-            throws IOException;
+    void deserialize(Entry<Key, Value> entry);
 
     /**
      * Gets a Boolean value indicating whether or not the Presto column is a null value.
@@ -414,7 +410,7 @@ public interface AccumuloRowSerializer
      * </tr>
      * </table>
      *
-     * @param type The presto {@link com.facebook.presto.spi.type.Type}
+     * @param type The presto {@link com.facebook.presto.common.type.Type}
      * @param value The Java object per the table in the method description
      * @return Encoded bytes
      */
@@ -486,7 +482,7 @@ public interface AccumuloRowSerializer
      * </tr>
      * </table>
      *
-     * @param type The presto {@link com.facebook.presto.spi.type.Type}
+     * @param type The presto {@link com.facebook.presto.common.type.Type}
      * @param value Encoded bytes to decode
      * @param <T> The Java type of the object that has been encoded to the given byte array
      * @return The Java object per the table in the method description
@@ -536,7 +532,7 @@ public interface AccumuloRowSerializer
      */
     static Block getBlockFromArray(Type elementType, List<?> array)
     {
-        BlockBuilder builder = elementType.createBlockBuilder(new BlockBuilderStatus(), array.size());
+        BlockBuilder builder = elementType.createBlockBuilder(null, array.size());
         for (Object item : array) {
             writeObject(builder, elementType, item);
         }
@@ -555,7 +551,7 @@ public interface AccumuloRowSerializer
         Type keyType = mapType.getTypeParameters().get(0);
         Type valueType = mapType.getTypeParameters().get(1);
 
-        BlockBuilder mapBlockBuilder = mapType.createBlockBuilder(new BlockBuilderStatus(), 1);
+        BlockBuilder mapBlockBuilder = mapType.createBlockBuilder(null, 1);
         BlockBuilder builder = mapBlockBuilder.beginBlockEntry();
 
         for (Entry<?, ?> entry : map.entrySet()) {
@@ -612,10 +608,10 @@ public interface AccumuloRowSerializer
     {
         if (Types.isArrayType(type)) {
             Type elementType = Types.getElementType(type);
-            return getArrayFromBlock(elementType, block.getObject(position, Block.class));
+            return getArrayFromBlock(elementType, block.getBlock(position));
         }
         else if (Types.isMapType(type)) {
-            return getMapFromBlock(type, block.getObject(position, Block.class));
+            return getMapFromBlock(type, block.getBlock(position));
         }
         else {
             if (type.getJavaType() == Slice.class) {

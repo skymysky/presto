@@ -13,20 +13,19 @@
  */
 package com.facebook.presto.tests.querystats;
 
+import com.facebook.airlift.http.client.HttpClientConfig;
+import com.facebook.airlift.http.client.jetty.JettyHttpClient;
+import com.facebook.airlift.json.JsonObjectMapperProvider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.inject.Exposed;
 import com.google.inject.Inject;
 import com.google.inject.Module;
 import com.google.inject.PrivateModule;
 import com.google.inject.Provides;
-import com.teradata.tempto.configuration.Configuration;
-import com.teradata.tempto.initialization.AutoModuleProvider;
-import com.teradata.tempto.initialization.SuiteModuleProvider;
-import io.airlift.http.client.HttpClientConfig;
-import io.airlift.http.client.jetty.JettyHttpClient;
-import io.airlift.json.ObjectMapperProvider;
-
-import javax.inject.Named;
+import io.prestodb.tempto.configuration.Configuration;
+import io.prestodb.tempto.initialization.AutoModuleProvider;
+import io.prestodb.tempto.initialization.SuiteModuleProvider;
+import jakarta.inject.Named;
 
 import java.net.URI;
 
@@ -44,7 +43,7 @@ public class QueryStatsClientModuleProvider
             @Override
             protected void configure()
             {
-                bind(ObjectMapper.class).toProvider(ObjectMapperProvider.class);
+                bind(ObjectMapper.class).toProvider(JsonObjectMapperProvider.class);
             }
 
             @Inject

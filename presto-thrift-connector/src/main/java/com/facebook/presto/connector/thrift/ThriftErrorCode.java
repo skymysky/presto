@@ -13,17 +13,19 @@
  */
 package com.facebook.presto.connector.thrift;
 
-import com.facebook.presto.spi.ErrorCode;
+import com.facebook.presto.common.ErrorCode;
+import com.facebook.presto.common.ErrorType;
 import com.facebook.presto.spi.ErrorCodeSupplier;
-import com.facebook.presto.spi.ErrorType;
 
-import static com.facebook.presto.spi.ErrorType.EXTERNAL;
+import static com.facebook.presto.common.ErrorType.EXTERNAL;
 
 public enum ThriftErrorCode
         implements ErrorCodeSupplier
 {
     THRIFT_SERVICE_CONNECTION_ERROR(1, EXTERNAL),
-    THRIFT_SERVICE_INVALID_RESPONSE(2, EXTERNAL);
+    THRIFT_SERVICE_INVALID_RESPONSE(2, EXTERNAL),
+    THRIFT_SERVICE_GENERIC_REMOTE_ERROR(3, EXTERNAL),
+    THRIFT_SERVICE_NO_AVAILABLE_HOSTS(4, EXTERNAL);
 
     private final ErrorCode errorCode;
 

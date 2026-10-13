@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.orc.stream;
 
+import com.facebook.presto.orc.ColumnWriterOptions;
+import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.OrcOutputBuffer;
 import com.facebook.presto.orc.checkpoint.BooleanStreamCheckpoint;
 import com.facebook.presto.orc.checkpoint.ByteStreamCheckpoint;
-import com.facebook.presto.orc.metadata.CompressionKind;
-import com.facebook.presto.orc.metadata.Stream;
+import com.facebook.presto.orc.metadata.Stream.StreamKind;
 import com.google.common.collect.ImmutableList;
-import io.airlift.slice.SliceOutput;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.util.ArrayList;
@@ -28,7 +28,6 @@ import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.base.Verify.verify;
 
 public class BooleanOutputStream
         implements ValueOutputStream<BooleanStreamCheckpoint>
@@ -41,9 +40,9 @@ public class BooleanOutputStream
     private int data;
     private boolean closed;
 
-    public BooleanOutputStream(CompressionKind compression, int bufferSize)
+    public BooleanOutputStream(ColumnWriterOptions columnWriterOptions, Optional<DwrfDataEncryptor> dwrfEncryptor)
     {
-        this(new ByteOutputStream(compression, bufferSize));
+        this(new ByteOutputStream(columnWriterOptions, dwrfEncryptor));
     }
 
     public BooleanOutputStream(OrcOutputBuffer buffer)
@@ -72,32 +71,29 @@ public class BooleanOutputStream
 
     public void writeBooleans(int count, boolean value)
     {
-        checkArgument(count >= 0, "count is negative");
         if (count == 0) {
             return;
         }
 
+        checkArgument(count > 0, "count must be positive");
+
         if (bitsInData != 0) {
             int bitsToWrite = Math.min(count, 8 - bitsInData);
             if (value) {
-                data |= getLowBitMask(bitsToWrite);
+                data |= getLowBitMask(bitsToWrite) << (8 - bitsInData - bitsToWrite);
             }
 
             bitsInData += bitsToWrite;
-            count -= bitsToWrite;
-            if (bitsInData == 8) {
-                flushData();
-            }
-            else {
+            if (bitsInData != 8) {
                 // there were not enough bits to fill the current data
-                verify(count == 0);
                 return;
             }
+
+            count -= bitsToWrite;
+            flushData();
         }
 
         // at this point there should be no pending data
-        verify(bitsInData == 0);
-
         // write 8 bits at a time
         while (count >= 8) {
             if (value) {
@@ -158,10 +154,16 @@ public class BooleanOutputStream
     }
 
     @Override
-    public Optional<Stream> writeDataStreams(int column, SliceOutput outputStream)
+    public StreamDataOutput getStreamDataOutput(int column, int sequence)
     {
         checkState(closed);
-        return byteOutputStream.writeDataStreams(column, outputStream);
+        return byteOutputStream.getStreamDataOutput(column, sequence);
+    }
+
+    public StreamDataOutput getStreamDataOutput(int column, int sequence, StreamKind streamKind)
+    {
+        checkState(closed);
+        return byteOutputStream.getStreamDataOutput(column, sequence, streamKind);
     }
 
     @Override

@@ -13,6 +13,18 @@
  */
 package com.facebook.presto.failureDetector;
 
+import com.facebook.airlift.concurrent.ThreadPoolExecutorMBean;
+import com.facebook.airlift.discovery.client.ServiceSelector;
+import com.facebook.airlift.discovery.client.ServiceType;
+import com.facebook.airlift.http.client.HttpClient;
+import com.facebook.airlift.http.client.Request;
+import com.facebook.airlift.http.client.Response;
+import com.facebook.airlift.http.client.ResponseHandler;
+import com.facebook.airlift.log.Logger;
+import com.facebook.airlift.node.NodeInfo;
+import com.facebook.airlift.stats.DecayCounter;
+import com.facebook.airlift.stats.ExponentialDecay;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.client.FailureInfo;
 import com.facebook.presto.server.InternalCommunicationConfig;
 import com.facebook.presto.spi.HostAddress;
@@ -21,27 +33,14 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.discovery.client.ServiceDescriptor;
-import io.airlift.discovery.client.ServiceSelector;
-import io.airlift.discovery.client.ServiceType;
-import io.airlift.http.client.HttpClient;
-import io.airlift.http.client.Request;
-import io.airlift.http.client.Response;
-import io.airlift.http.client.ResponseHandler;
-import io.airlift.log.Logger;
-import io.airlift.node.NodeInfo;
-import io.airlift.stats.DecayCounter;
-import io.airlift.stats.ExponentialDecay;
-import io.airlift.units.Duration;
-import org.joda.time.DateTime;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import jakarta.annotation.Nullable;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import jakarta.inject.Inject;
 import org.weakref.jmx.Managed;
-
-import javax.annotation.Nullable;
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
+import org.weakref.jmx.Nested;
 
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
@@ -54,12 +53,16 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
+import static com.facebook.airlift.http.client.Request.Builder.prepareHead;
 import static com.facebook.presto.failureDetector.FailureDetector.State.ALIVE;
 import static com.facebook.presto.failureDetector.FailureDetector.State.GONE;
 import static com.facebook.presto.failureDetector.FailureDetector.State.UNKNOWN;
@@ -68,10 +71,7 @@ import static com.facebook.presto.spi.HostAddress.fromUri;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static io.airlift.http.client.Request.Builder.prepareHead;
 import static java.util.Objects.requireNonNull;
-import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 
 public class HeartbeatFailureDetector
         implements FailureDetector
@@ -82,7 +82,8 @@ public class HeartbeatFailureDetector
     private final HttpClient httpClient;
     private final NodeInfo nodeInfo;
 
-    private final ScheduledExecutorService executor = newSingleThreadScheduledExecutor(daemonThreadsNamed("failure-detector"));
+    private final ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, daemonThreadsNamed("failure-detector"));
+    private final ThreadPoolExecutorMBean executorMBean = new ThreadPoolExecutorMBean(executor);
 
     // monitoring tasks by service id
     private final ConcurrentMap<UUID, MonitoringTask> tasks = new ConcurrentHashMap<>();
@@ -92,6 +93,7 @@ public class HeartbeatFailureDetector
     private final boolean isEnabled;
     private final Duration warmupInterval;
     private final Duration gcGraceInterval;
+    private final int exponentialDecaySeconds;
     private final boolean httpsRequired;
 
     private final AtomicBoolean started = new AtomicBoolean();
@@ -118,6 +120,7 @@ public class HeartbeatFailureDetector
         this.heartbeat = failureDetectorConfig.getHeartbeatInterval();
         this.warmupInterval = failureDetectorConfig.getWarmupInterval();
         this.gcGraceInterval = failureDetectorConfig.getExpirationGraceInterval();
+        this.exponentialDecaySeconds = failureDetectorConfig.getExponentialDecaySeconds();
 
         this.isEnabled = failureDetectorConfig.isEnabled();
 
@@ -138,7 +141,7 @@ public class HeartbeatFailureDetector
                     }
                     catch (Throwable e) {
                         // ignore to avoid getting unscheduled
-                        log.warn(e, "Error updating services");
+                        log.error(e, "Error updating services");
                     }
                 }
             }, 0, 5, TimeUnit.SECONDS);
@@ -149,6 +152,13 @@ public class HeartbeatFailureDetector
     public void shutdown()
     {
         executor.shutdownNow();
+    }
+
+    @Managed
+    @Nested
+    public ThreadPoolExecutorMBean getExecutor()
+    {
+        return executorMBean;
     }
 
     @Override
@@ -215,12 +225,12 @@ public class HeartbeatFailureDetector
     @VisibleForTesting
     void updateMonitoredServices()
     {
-        Set<ServiceDescriptor> online = selector.selectAllServices().stream()
+        Set<com.facebook.airlift.discovery.client.ServiceDescriptor> online = selector.selectAllServices().stream()
                 .filter(descriptor -> !nodeInfo.getNodeId().equals(descriptor.getNodeId()))
                 .collect(toImmutableSet());
 
         Set<UUID> onlineIds = online.stream()
-                .map(ServiceDescriptor::getId)
+                .map(com.facebook.airlift.discovery.client.ServiceDescriptor::getId)
                 .collect(toImmutableSet());
 
         // make sure only one thread is updating the registrations
@@ -240,15 +250,17 @@ public class HeartbeatFailureDetector
                     .forEach(MonitoringTask::disable);
 
             // 3. create tasks for new services
-            Set<ServiceDescriptor> newServices = online.stream()
+            Set<com.facebook.airlift.discovery.client.ServiceDescriptor> newServices = online.stream()
                     .filter(service -> !tasks.keySet().contains(service.getId()))
                     .collect(toImmutableSet());
 
-            for (ServiceDescriptor service : newServices) {
-                URI uri = getHttpUri(service);
+            for (com.facebook.airlift.discovery.client.ServiceDescriptor service : newServices) {
+                ServiceDescriptor descriptor = convertDiscoveryDescriptor(service);
+                URI uri = getHttpUri(descriptor);
 
                 if (uri != null) {
-                    tasks.put(service.getId(), new MonitoringTask(service, uri));
+                    URI pingURI = uriBuilderFrom(uri).appendPath("/v1/status").build();
+                    tasks.put(service.getId(), new MonitoringTask(descriptor, pingURI));
                 }
             }
 
@@ -256,6 +268,33 @@ public class HeartbeatFailureDetector
             tasks.values().stream()
                     .filter(task -> onlineIds.contains(task.getService().getId()))
                     .forEach(MonitoringTask::enable);
+        }
+    }
+
+    public static ServiceDescriptor convertDiscoveryDescriptor(com.facebook.airlift.discovery.client.ServiceDescriptor descriptor)
+    {
+        return new ServiceDescriptor(
+                descriptor.getId(),
+                descriptor.getNodeId(),
+                descriptor.getType(),
+                descriptor.getPool(),
+                descriptor.getLocation(),
+                convertDiscoveryServiceState(descriptor.getState()),
+                descriptor.getProperties());
+    }
+
+    public static ServiceState convertDiscoveryServiceState(com.facebook.airlift.discovery.client.ServiceState serviceState)
+    {
+        if (serviceState == null) {
+            return null;
+        }
+        switch (serviceState) {
+            case STOPPED:
+                return ServiceState.STOPPED;
+            case RUNNING:
+                return ServiceState.RUNNING;
+            default:
+                throw new UnsupportedOperationException();
         }
     }
 
@@ -292,7 +331,7 @@ public class HeartbeatFailureDetector
         {
             this.uri = uri;
             this.service = service;
-            this.stats = new Stats(uri);
+            this.stats = new Stats(uri, exponentialDecaySeconds);
         }
 
         public Stats getStats()
@@ -319,7 +358,7 @@ public class HeartbeatFailureDetector
                         }
                         catch (Throwable e) {
                             // ignore to avoid getting unscheduled
-                            log.warn(e, "Error pinging service %s (%s)", service.getId(), uri);
+                            log.error(e, "Error pinging service %s (%s)", service.getId(), uri);
                         }
                     }
                 }, heartbeat.toMillis(), heartbeat.toMillis(), TimeUnit.MILLISECONDS);
@@ -367,7 +406,6 @@ public class HeartbeatFailureDetector
 
                     @Override
                     public Object handle(Request request, Response response)
-                            throws Exception
                     {
                         stats.recordSuccess();
                         return null;
@@ -396,37 +434,40 @@ public class HeartbeatFailureDetector
         private final long start = System.nanoTime();
         private final URI uri;
 
-        private final DecayCounter recentRequests = new DecayCounter(ExponentialDecay.oneMinute());
-        private final DecayCounter recentFailures = new DecayCounter(ExponentialDecay.oneMinute());
-        private final DecayCounter recentSuccesses = new DecayCounter(ExponentialDecay.oneMinute());
-        private final AtomicReference<DateTime> lastRequestTime = new AtomicReference<>();
-        private final AtomicReference<DateTime> lastResponseTime = new AtomicReference<>();
+        private final DecayCounter recentRequests;
+        private final DecayCounter recentFailures;
+        private final DecayCounter recentSuccesses;
+        private final AtomicLong lastRequestTimeInMillis = new AtomicLong();
+        private final AtomicLong lastResponseTimeInMillis = new AtomicLong();
         private final AtomicReference<Exception> lastFailureException = new AtomicReference<>();
 
         @GuardedBy("this")
         private final Map<Class<? extends Throwable>, DecayCounter> failureCountByType = new HashMap<>();
 
-        public Stats(URI uri)
+        public Stats(URI uri, int exponentialDecaySeconds)
         {
             this.uri = uri;
+            this.recentRequests = new DecayCounter(ExponentialDecay.seconds(exponentialDecaySeconds));
+            this.recentFailures = new DecayCounter(ExponentialDecay.seconds(exponentialDecaySeconds));
+            this.recentSuccesses = new DecayCounter(ExponentialDecay.seconds(exponentialDecaySeconds));
         }
 
         public void recordStart()
         {
             recentRequests.add(1);
-            lastRequestTime.set(new DateTime());
+            lastRequestTimeInMillis.set(System.currentTimeMillis());
         }
 
         public void recordSuccess()
         {
             recentSuccesses.add(1);
-            lastResponseTime.set(new DateTime());
+            lastResponseTimeInMillis.set(System.currentTimeMillis());
         }
 
         public void recordFailure(Exception exception)
         {
             recentFailures.add(1);
-            lastResponseTime.set(new DateTime());
+            lastResponseTimeInMillis.set(System.currentTimeMillis());
             lastFailureException.set(exception);
 
             Throwable cause = exception;
@@ -481,15 +522,15 @@ public class HeartbeatFailureDetector
         }
 
         @JsonProperty
-        public DateTime getLastRequestTime()
+        public long getLastRequestTimeInMillis()
         {
-            return lastRequestTime.get();
+            return lastRequestTimeInMillis.get();
         }
 
         @JsonProperty
-        public DateTime getLastResponseTime()
+        public long getLastResponseTimeInMillis()
         {
-            return lastResponseTime.get();
+            return lastResponseTimeInMillis.get();
         }
 
         @JsonIgnore

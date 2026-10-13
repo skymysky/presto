@@ -28,4 +28,6 @@ import static java.lang.annotation.RetentionPolicy.RUNTIME;
 public @interface TypeParameter
 {
     String value();
+
+    String boundedBy() default "";
 }

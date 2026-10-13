@@ -17,8 +17,6 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Optional;
 
-import static com.facebook.presto.orc.metadata.statistics.DecimalStatistics.DECIMAL_VALUE_BYTES_OVERHEAD;
-
 public class ShortDecimalStatisticsBuilder
         implements LongValueStatisticsBuilder
 {
@@ -27,6 +25,8 @@ public class ShortDecimalStatisticsBuilder
     private final int scale;
 
     private long nonNullValueCount;
+    private long storageSize;
+    private long rawSize;
     private long minimum = Long.MAX_VALUE;
     private long maximum = Long.MIN_VALUE;
 
@@ -51,23 +51,29 @@ public class ShortDecimalStatisticsBuilder
         }
         return Optional.of(new DecimalStatistics(
                 new BigDecimal(BigInteger.valueOf(minimum), scale),
-                new BigDecimal(BigInteger.valueOf(maximum), scale)));
+                new BigDecimal(BigInteger.valueOf(maximum), scale),
+                SHORT_DECIMAL_VALUE_BYTES));
     }
 
     @Override
     public ColumnStatistics buildColumnStatistics()
     {
         Optional<DecimalStatistics> decimalStatistics = buildDecimalStatistics();
-        return new ColumnStatistics(
-                nonNullValueCount,
-                decimalStatistics.map(s -> DECIMAL_VALUE_BYTES_OVERHEAD + SHORT_DECIMAL_VALUE_BYTES).orElse(0L),
-                null,
-                null,
-                null,
-                null,
-                null,
-                decimalStatistics.orElse(null),
-                null,
-                null);
+        if (decimalStatistics.isPresent()) {
+            return new DecimalColumnStatistics(nonNullValueCount, null, rawSize, storageSize, decimalStatistics.get());
+        }
+        return new ColumnStatistics(nonNullValueCount, null, rawSize, storageSize);
+    }
+
+    @Override
+    public void incrementRawSize(long rawSize)
+    {
+        this.rawSize += rawSize;
+    }
+
+    @Override
+    public void incrementSize(long storageSize)
+    {
+        this.storageSize += storageSize;
     }
 }

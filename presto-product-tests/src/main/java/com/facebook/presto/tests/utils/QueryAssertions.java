@@ -13,15 +13,15 @@
  */
 package com.facebook.presto.tests.utils;
 
+import com.facebook.airlift.units.Duration;
 import com.google.common.base.Joiner;
 import com.google.common.collect.Iterables;
-import com.teradata.tempto.query.QueryResult;
-import io.airlift.units.Duration;
+import io.prestodb.tempto.query.QueryResult;
 
 import java.util.function.Supplier;
 
+import static com.facebook.airlift.units.Duration.nanosSince;
 import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
-import static io.airlift.units.Duration.nanosSince;
 import static java.lang.String.format;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.testng.Assert.fail;
@@ -49,7 +49,7 @@ public class QueryAssertions
     {
         for (Object row : expectedSubset.rows()) {
             if (!all.rows().contains(row)) {
-                fail(format("expected row missing: %s\nAll %s rows:\n    %s\nExpected subset %s rows:\n    %s\n",
+                fail(format("expected row missing: %s%nAll %s rows:%n    %s%nExpected subset %s rows:%n    %s%n",
                         row,
                         all.getRowsCount(),
                         Joiner.on("\n    ").join(Iterables.limit(all.rows(), 100)),

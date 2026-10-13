@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.mongodb;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorFactory;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.testing.TestingConnectorContext;
 import com.google.common.collect.ImmutableMap;
 import de.bwaldvogel.mongo.MongoServer;
@@ -46,7 +46,6 @@ public class TestMongoPlugin
 
     @Test
     public void testCreateConnector()
-            throws Exception
     {
         MongoPlugin plugin = new MongoPlugin();
 
@@ -60,7 +59,7 @@ public class TestMongoPlugin
     }
 
     @AfterClass(alwaysRun = true)
-    public void destory()
+    public void destroy()
     {
         server.shutdown();
     }

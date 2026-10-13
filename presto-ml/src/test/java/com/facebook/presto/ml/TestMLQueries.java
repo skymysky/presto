@@ -14,9 +14,10 @@
 package com.facebook.presto.ml;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.spi.type.ParametricType;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.type.ParametricType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.testing.LocalQueryRunner;
+import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestQueryFramework;
 import com.facebook.presto.tpch.TpchConnectorFactory;
 import com.google.common.collect.ImmutableMap;
@@ -29,14 +30,8 @@ import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 public class TestMLQueries
         extends AbstractTestQueryFramework
 {
-    public TestMLQueries()
-    {
-        super(TestMLQueries::createLocalQueryRunner);
-    }
-
     @Test
     public void testPrediction()
-            throws Exception
     {
         assertQuery("SELECT classify(features(1, 2), model) " +
                 "FROM (SELECT learn_classifier(labels, features) AS model FROM (VALUES (1, features(1, 2))) t(labels, features)) t2", "SELECT 1");
@@ -44,13 +39,13 @@ public class TestMLQueries
 
     @Test
     public void testVarcharPrediction()
-            throws Exception
     {
         assertQuery("SELECT classify(features(1, 2), model) " +
                 "FROM (SELECT learn_classifier(labels, features) AS model FROM (VALUES ('cat', features(1, 2))) t(labels, features)) t2", "SELECT 'cat'");
     }
 
-    private static LocalQueryRunner createLocalQueryRunner()
+    @Override
+    protected QueryRunner createQueryRunner()
     {
         Session defaultSession = testSessionBuilder()
                 .setCatalog("local")
@@ -68,12 +63,12 @@ public class TestMLQueries
 
         MLPlugin plugin = new MLPlugin();
         for (Type type : plugin.getTypes()) {
-            localQueryRunner.getTypeManager().addType(type);
+            localQueryRunner.getFunctionAndTypeManager().addType(type);
         }
         for (ParametricType parametricType : plugin.getParametricTypes()) {
-            localQueryRunner.getTypeManager().addParametricType(parametricType);
+            localQueryRunner.getFunctionAndTypeManager().addParametricType(parametricType);
         }
-        localQueryRunner.getMetadata().addFunctions(extractFunctions(new MLPlugin().getFunctions()));
+        localQueryRunner.getMetadata().registerBuiltInFunctions(extractFunctions(new MLPlugin().getFunctions()));
 
         return localQueryRunner;
     }

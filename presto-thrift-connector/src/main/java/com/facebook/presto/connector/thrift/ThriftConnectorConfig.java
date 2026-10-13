@@ -13,21 +13,21 @@
  */
 package com.facebook.presto.connector.thrift;
 
-import io.airlift.configuration.Config;
-import io.airlift.units.DataSize;
-import io.airlift.units.MaxDataSize;
-import io.airlift.units.MinDataSize;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.MaxDataSize;
+import com.facebook.airlift.units.MinDataSize;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
-
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 
 public class ThriftConnectorConfig
 {
     private DataSize maxResponseSize = new DataSize(16, MEGABYTE);
     private int metadataRefreshThreads = 1;
-    private int retryDriverThreads = 8;
+    private int lookupRequestsConcurrency = 1;
+    private boolean useIdentityThriftHeaders;
 
     @NotNull
     @MinDataSize("1MB")
@@ -58,15 +58,27 @@ public class ThriftConnectorConfig
     }
 
     @Min(1)
-    public int getRetryDriverThreads()
+    public int getLookupRequestsConcurrency()
     {
-        return retryDriverThreads;
+        return lookupRequestsConcurrency;
     }
 
-    @Config("presto-thrift.retry-driver-threads")
-    public ThriftConnectorConfig setRetryDriverThreads(int retryDriverThreads)
+    @Config("presto-thrift.lookup-requests-concurrency")
+    public ThriftConnectorConfig setLookupRequestsConcurrency(int lookupRequestsConcurrency)
     {
-        this.retryDriverThreads = retryDriverThreads;
+        this.lookupRequestsConcurrency = lookupRequestsConcurrency;
+        return this;
+    }
+
+    public boolean getUseIdentityThriftHeader()
+    {
+        return useIdentityThriftHeaders;
+    }
+
+    @Config("presto-thrift.use-identity-thrift-headers")
+    public ThriftConnectorConfig setUseIdentityThriftHeader(boolean setIdentityThriftHeaders)
+    {
+        this.useIdentityThriftHeaders = setIdentityThriftHeaders;
         return this;
     }
 }

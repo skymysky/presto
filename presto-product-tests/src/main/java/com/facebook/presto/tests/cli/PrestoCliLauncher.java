@@ -17,12 +17,13 @@ import com.facebook.presto.cli.Presto;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Inject;
 import com.google.inject.name.Named;
-import com.teradata.tempto.ProductTest;
+import io.prestodb.tempto.ProductTest;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
 
+import static com.facebook.presto.tests.cli.PrestoCliTests.FAILURE_EXIT_MESSAGE;
 import static com.google.common.io.Resources.getResource;
 import static com.google.common.io.Resources.readLines;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -60,28 +61,40 @@ public class PrestoCliLauncher
     {
         if (presto != null) {
             presto.getProcessInput().println(EXIT_COMMAND);
-            presto.waitForWithTimeoutAndKill();
+            stopPrestoIgnoreQueryFailure(presto);
         }
     }
 
     protected void launchPrestoCli(String... arguments)
-            throws IOException, InterruptedException
+            throws IOException
     {
         launchPrestoCli(asList(arguments));
     }
 
     protected void launchPrestoCli(List<String> arguments)
-            throws IOException, InterruptedException
+            throws IOException
     {
         presto = new PrestoCliProcess(getProcessBuilder(arguments).start());
     }
 
     protected ProcessBuilder getProcessBuilder(List<String> arguments)
     {
-        ImmutableList command = ImmutableList.builder()
-                .add(new String[] {JAVA_BIN, "-cp", CLASSPATH, Presto.class.getCanonicalName()})
+        return new ProcessBuilder(ImmutableList.<String>builder()
+                .add(JAVA_BIN, "-cp", CLASSPATH, Presto.class.getCanonicalName())
                 .addAll(arguments)
-                .build();
-        return new ProcessBuilder(command);
+                .build());
+    }
+
+    public static void stopPrestoIgnoreQueryFailure(PrestoCliProcess presto)
+            throws InterruptedException
+    {
+        try {
+            presto.waitForWithTimeoutAndKill();
+        }
+        catch (RuntimeException ex) {
+            if (!ex.getMessage().contains(FAILURE_EXIT_MESSAGE)) {
+                throw ex;
+            }
+        }
     }
 }

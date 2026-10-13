@@ -13,12 +13,11 @@
  */
 package com.facebook.presto.orc.metadata.statistics;
 
-import io.airlift.slice.Slice;
+import com.facebook.presto.common.block.Block;
 
 import java.util.List;
 import java.util.Optional;
 
-import static com.facebook.presto.orc.metadata.statistics.BinaryStatistics.BINARY_VALUE_BYTES_OVERHEAD;
 import static com.google.common.base.Verify.verify;
 import static java.util.Objects.requireNonNull;
 
@@ -26,14 +25,15 @@ public class BinaryStatisticsBuilder
         implements SliceColumnStatisticsBuilder
 {
     private long nonNullValueCount;
+    private long storageSize;
+    private long rawSize;
     private long sum;
 
     @Override
-    public void addValue(Slice value)
+    public void addValue(Block block, int position)
     {
-        requireNonNull(value, "value is null");
-
-        sum += value.length();
+        requireNonNull(block, "block is null");
+        sum += block.getSliceLength(position);
         nonNullValueCount++;
     }
 
@@ -57,18 +57,23 @@ public class BinaryStatisticsBuilder
     public ColumnStatistics buildColumnStatistics()
     {
         Optional<BinaryStatistics> binaryStatistics = buildBinaryStatistics();
-        binaryStatistics.ifPresent(s -> verify(nonNullValueCount > 0));
-        return new ColumnStatistics(
-                nonNullValueCount,
-                binaryStatistics.map(s -> BINARY_VALUE_BYTES_OVERHEAD + sum / nonNullValueCount).orElse(0L),
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                binaryStatistics.orElse(null),
-                null);
+        if (binaryStatistics.isPresent()) {
+            verify(nonNullValueCount > 0);
+            return new BinaryColumnStatistics(nonNullValueCount, null, rawSize, storageSize, binaryStatistics.get());
+        }
+        return new ColumnStatistics(nonNullValueCount, null, rawSize, storageSize);
+    }
+
+    @Override
+    public void incrementRawSize(long rawSize)
+    {
+        this.rawSize += rawSize;
+    }
+
+    @Override
+    public void incrementSize(long storageSize)
+    {
+        this.storageSize += storageSize;
     }
 
     public static Optional<BinaryStatistics> mergeBinaryStatistics(List<ColumnStatistics> stats)

@@ -13,14 +13,13 @@
  */
 package com.facebook.presto.atop;
 
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.spi.PrestoException;
 import com.google.common.util.concurrent.SimpleTimeLimiter;
 import com.google.common.util.concurrent.TimeLimiter;
 import com.google.common.util.concurrent.UncheckedTimeoutException;
-import io.airlift.units.Duration;
-
-import javax.annotation.PreDestroy;
-import javax.inject.Inject;
+import jakarta.annotation.PreDestroy;
+import jakarta.inject.Inject;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -32,10 +31,10 @@ import java.util.NoSuchElementException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.presto.atop.AtopErrorCode.ATOP_CANNOT_START_PROCESS_ERROR;
 import static com.facebook.presto.atop.AtopErrorCode.ATOP_READ_TIMEOUT;
 import static com.google.common.base.Preconditions.checkArgument;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newFixedThreadPool;
@@ -97,7 +96,7 @@ public class AtopProcessFactory
         {
             this.process = requireNonNull(process, "process is null");
             underlyingReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            TimeLimiter limiter = new SimpleTimeLimiter(executor);
+            TimeLimiter limiter = SimpleTimeLimiter.create(executor);
             this.reader = limiter.newProxy(underlyingReader::readLine, LineReader.class, readTimeout.toMillis(), MILLISECONDS);
             try {
                 // Ignore the first two lines, as they are an event since boot (RESET followed by event line)

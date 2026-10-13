@@ -13,11 +13,18 @@
  */
 package com.facebook.presto.orc.metadata.statistics;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.Type;
+import io.airlift.slice.Slice;
+
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 
-import static com.facebook.presto.orc.metadata.statistics.DecimalStatistics.DECIMAL_VALUE_BYTES_OVERHEAD;
+import static com.google.common.base.Preconditions.checkState;
+import static java.lang.Math.max;
 import static java.util.Objects.requireNonNull;
 
 public class LongDecimalStatisticsBuilder
@@ -26,8 +33,22 @@ public class LongDecimalStatisticsBuilder
     public static final long LONG_DECIMAL_VALUE_BYTES = 16L;
 
     private long nonNullValueCount;
+    private long storageSize;
+    private long rawSize;
     private BigDecimal minimum;
     private BigDecimal maximum;
+
+    @Override
+    public void addBlock(Type type, Block block)
+    {
+        int scale = ((DecimalType) type).getScale();
+        for (int position = 0; position < block.getPositionCount(); position++) {
+            if (!block.isNull(position)) {
+                Slice value = type.getSlice(block, position);
+                addValue(new BigDecimal(Decimals.decodeUnscaledValue(value), scale));
+            }
+        }
+    }
 
     public void addValue(BigDecimal value)
     {
@@ -62,34 +83,41 @@ public class LongDecimalStatisticsBuilder
         }
     }
 
-    private Optional<DecimalStatistics> buildDecimalStatistics()
+    private Optional<DecimalStatistics> buildDecimalStatistics(long decimalSizeInBytes)
     {
         if (nonNullValueCount == 0) {
             return Optional.empty();
         }
-        return Optional.of(new DecimalStatistics(minimum, maximum));
+        checkState(minimum != null && maximum != null);
+        return Optional.of(new DecimalStatistics(minimum, maximum, decimalSizeInBytes));
     }
 
     @Override
     public ColumnStatistics buildColumnStatistics()
     {
-        Optional<DecimalStatistics> decimalStatistics = buildDecimalStatistics();
-        return new ColumnStatistics(
-                nonNullValueCount,
-                decimalStatistics.map(s -> DECIMAL_VALUE_BYTES_OVERHEAD + LONG_DECIMAL_VALUE_BYTES).orElse(0L),
-                null,
-                null,
-                null,
-                null,
-                null,
-                decimalStatistics.orElse(null),
-                null,
-                null);
+        Optional<DecimalStatistics> decimalStatistics = buildDecimalStatistics(LONG_DECIMAL_VALUE_BYTES);
+        if (decimalStatistics.isPresent()) {
+            return new DecimalColumnStatistics(nonNullValueCount, null, rawSize, storageSize, decimalStatistics.get());
+        }
+        return new ColumnStatistics(nonNullValueCount, null, rawSize, storageSize);
+    }
+
+    @Override
+    public void incrementRawSize(long rawSize)
+    {
+        this.rawSize += rawSize;
+    }
+
+    @Override
+    public void incrementSize(long storageSize)
+    {
+        this.storageSize += storageSize;
     }
 
     public static Optional<DecimalStatistics> mergeDecimalStatistics(List<ColumnStatistics> stats)
     {
         LongDecimalStatisticsBuilder decimalStatisticsBuilder = new LongDecimalStatisticsBuilder();
+        long decimalSizeInBytes = 0;
         for (ColumnStatistics columnStatistics : stats) {
             DecimalStatistics partialStatistics = columnStatistics.getDecimalStatistics();
             if (columnStatistics.getNumberOfValues() > 0) {
@@ -98,8 +126,9 @@ public class LongDecimalStatisticsBuilder
                     return Optional.empty();
                 }
                 decimalStatisticsBuilder.addDecimalStatistics(columnStatistics.getNumberOfValues(), partialStatistics);
+                decimalSizeInBytes = max(decimalSizeInBytes, partialStatistics.getDecimalSizeInBytes());
             }
         }
-        return decimalStatisticsBuilder.buildDecimalStatistics();
+        return decimalStatisticsBuilder.buildDecimalStatistics(decimalSizeInBytes);
     }
 }

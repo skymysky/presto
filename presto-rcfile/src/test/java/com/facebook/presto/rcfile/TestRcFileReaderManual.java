@@ -13,23 +13,23 @@
  */
 package com.facebook.presto.rcfile;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.presto.common.block.Block;
 import com.facebook.presto.rcfile.binary.BinaryRcFileEncoding;
-import com.facebook.presto.spi.block.Block;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
-import io.airlift.units.DataSize;
 import org.testng.annotations.Test;
 
 import java.io.IOException;
 import java.util.List;
 
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.slice.Slices.utf8Slice;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.Math.toIntExact;
 import static java.util.stream.Collectors.toList;
 import static org.testng.Assert.assertEquals;
@@ -89,7 +89,7 @@ public class TestRcFileReaderManual
             // straddle segment start
             assertEquals(segment.getValues(), readValues(file, segment.getOffset() - 1, 2));
 
-            // regions entirely within the the segment
+            // regions entirely within the segment
             assertEquals(ImmutableList.of(), readValues(file, segment.getOffset() + 1, 1));
             assertEquals(ImmutableList.of(), readValues(file, segment.getOffset() + 1, segment.getLength() - 1));
 
@@ -294,6 +294,8 @@ public class TestRcFileReaderManual
     private static class SliceRcFileDataSource
             implements RcFileDataSource
     {
+        private static final RcFileDataSourceId DATA_SOURCE_ID = new RcFileDataSourceId("test");
+
         private final Slice data;
 
         public SliceRcFileDataSource(Slice data)
@@ -328,6 +330,12 @@ public class TestRcFileReaderManual
         @Override
         public void close()
         {
+        }
+
+        @Override
+        public RcFileDataSourceId getId()
+        {
+            return DATA_SOURCE_ID;
         }
     }
 

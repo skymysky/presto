@@ -19,7 +19,7 @@ connection properties as appropriate for your setup:
 .. code-block:: none
 
     connector.name=redshift
-    connection-url=jdbc:postgresql://example.net:5439/database
+    connection-url=jdbc:redshift://example.net:5439/database
     connection-user=root
     connection-password=secret
 
@@ -35,6 +35,64 @@ To add another catalog, simply add another properties file to ``etc/catalog``
 with a different name (making sure it ends in ``.properties``). For example,
 if you name the property file ``sales.properties``, Presto will create a
 catalog named ``sales`` using the configured connector.
+
+General Configuration Properties
+---------------------------------
+
+================================================== ==================================================================== ===========
+Property Name                                      Description                                                          Default
+================================================== ==================================================================== ===========
+``user-credential-name``                           Name of the ``extraCredentials`` property whose value is the JDBC
+                                                   driver's user name. See ``extraCredentials`` in
+                                                   :ref:`Parameter Reference <jdbc-parameter-reference>`.
+
+``password-credential-name``                       Name of the ``extraCredentials`` property whose value is the JDBC
+                                                   driver's user password. See ``extraCredentials`` in
+                                                   :ref:`Parameter Reference <jdbc-parameter-reference>`.
+
+``case-insensitive-name-matching``                 Match dataset and table names case-insensitively.                    ``false``
+
+``case-insensitive-name-matching.cache-ttl``       Duration for which remote dataset and table names will be
+                                                   cached. Set to ``0ms`` to disable the cache.                         ``1m``
+
+``list-schemas-ignored-schemas``                   List of schemas to ignore when listing schemas.                      ``information_schema``
+
+``case-sensitive-name-matching``                   Enable case sensitive identifier support for schema and table        ``false``
+                                                   names for the connector. When disabled, names are matched
+                                                   case-insensitively using lowercase normalization.
+================================================== ==================================================================== ===========
+
+
+Procedures
+----------
+
+Use the :doc:`/sql/call` statement to perform data manipulation or administrative tasks. Procedures are available in the ``system`` schema of the catalog.
+
+Execute Procedure
+^^^^^^^^^^^^^^^^^
+
+Underlying datasources may support some operation or SQL syntax which is not supported by Presto, either at the parser level or at the connector level.
+Trying to run such SQL statements in Presto can result in errors during parsing or analysing. For example, Redshift supports creating auto generated
+primary keys which is not supported in Presto. Running this procedure enables users to do a SQL passthrough to the underlying database, and Presto just acts
+as a middle man for passing the statement.
+
+The following arguments are available:
+
+============= ========== =============== =======================================================================
+Argument Name Required   Type            Description
+============= ========== =============== =======================================================================
+``QUERY``     Yes        string          SQL statement to run
+============= ========== =============== =======================================================================
+
+Examples:
+
+* Create a table with auto generated primary key::
+
+    CALL redshift.system.execute('create table schema1.table1 (id INT IDENTITY(1, 1), a int)')
+
+    CALL redshift.system.execute(QUERY => 'create table schema1.table1 (id INT IDENTITY(1, 1), a int)')
+
+
 
 Querying Redshift
 -----------------

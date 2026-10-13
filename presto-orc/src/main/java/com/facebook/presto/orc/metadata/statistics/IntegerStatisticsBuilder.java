@@ -16,15 +16,19 @@ package com.facebook.presto.orc.metadata.statistics;
 import java.util.List;
 import java.util.Optional;
 
-import static com.facebook.presto.orc.metadata.statistics.IntegerStatistics.INTEGER_VALUE_BYTES;
+import static java.lang.Math.addExact;
 import static java.util.Objects.requireNonNull;
 
 public class IntegerStatisticsBuilder
         implements LongValueStatisticsBuilder
 {
     private long nonNullValueCount;
+    private long storageSize;
+    private long rawSize;
     private long minimum = Long.MAX_VALUE;
     private long maximum = Long.MIN_VALUE;
+    private long sum;
+    private boolean overflow;
 
     @Override
     public void addValue(long value)
@@ -33,17 +37,44 @@ public class IntegerStatisticsBuilder
 
         minimum = Math.min(value, minimum);
         maximum = Math.max(value, maximum);
+
+        if (!overflow) {
+            try {
+                sum = addExact(sum, value);
+            }
+            catch (ArithmeticException e) {
+                overflow = true;
+            }
+        }
+    }
+
+    public long getMaximum()
+    {
+        return maximum;
     }
 
     private void addIntegerStatistics(long valueCount, IntegerStatistics value)
     {
         requireNonNull(value, "value is null");
-        requireNonNull(value.getMin(), "value.getMin() is null");
-        requireNonNull(value.getMax(), "value.getMax() is null");
 
         nonNullValueCount += valueCount;
-        minimum = Math.min(value.getMin(), minimum);
-        maximum = Math.max(value.getMax(), maximum);
+        minimum = Math.min(value.getMinPrimitive(), minimum);
+        maximum = Math.max(value.getMaxPrimitive(), maximum);
+
+        if (!value.hasSum()) {
+            // if input value does not have a sum tag this stat as overflowed
+            // to prevent creation of the sum stats (since it was not provided
+            // for these values).
+            overflow = true;
+        }
+        else if (!overflow) {
+            try {
+                sum = addExact(sum, value.getSumPrimitive());
+            }
+            catch (ArithmeticException e) {
+                overflow = true;
+            }
+        }
     }
 
     private Optional<IntegerStatistics> buildIntegerStatistics()
@@ -51,24 +82,29 @@ public class IntegerStatisticsBuilder
         if (nonNullValueCount == 0) {
             return Optional.empty();
         }
-        return Optional.of(new IntegerStatistics(minimum, maximum));
+        return Optional.of(new IntegerStatistics(minimum, maximum, overflow ? null : sum));
     }
 
     @Override
     public ColumnStatistics buildColumnStatistics()
     {
         Optional<IntegerStatistics> integerStatistics = buildIntegerStatistics();
-        return new ColumnStatistics(
-                nonNullValueCount,
-                integerStatistics.map(s -> INTEGER_VALUE_BYTES).orElse(0L),
-                null,
-                integerStatistics.orElse(null),
-                null,
-                null,
-                null,
-                null,
-                null,
-                null);
+        if (integerStatistics.isPresent()) {
+            return new IntegerColumnStatistics(nonNullValueCount, null, rawSize, storageSize, integerStatistics.get());
+        }
+        return new ColumnStatistics(nonNullValueCount, null, rawSize, storageSize);
+    }
+
+    @Override
+    public void incrementRawSize(long rawSize)
+    {
+        this.rawSize += rawSize;
+    }
+
+    @Override
+    public void incrementSize(long storageSize)
+    {
+        this.storageSize += storageSize;
     }
 
     public static Optional<IntegerStatistics> mergeIntegerStatistics(List<ColumnStatistics> stats)

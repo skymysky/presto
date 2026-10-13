@@ -14,17 +14,20 @@
 package com.facebook.presto.tests;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.connector.ConnectorId;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.SessionPropertyManager;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.scalar.sql.SqlInvokedFunctionsPlugin;
+import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.facebook.presto.testing.MaterializedResult;
+import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.testing.TestingAccessControlManager;
 import com.facebook.presto.tpch.TpchConnectorFactory;
 import com.google.common.collect.ImmutableMap;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Test;
 
 import java.util.List;
 
@@ -36,11 +39,6 @@ public class TestQueryPlanDeterminism
         extends AbstractTestQueries
 {
     private PlanDeterminismChecker determinismChecker;
-
-    protected TestQueryPlanDeterminism()
-    {
-        super(TestQueryPlanDeterminism::createLocalQueryRunner);
-    }
 
     @BeforeClass
     public void setUp()
@@ -54,7 +52,8 @@ public class TestQueryPlanDeterminism
         determinismChecker = null;
     }
 
-    public static LocalQueryRunner createLocalQueryRunner()
+    @Override
+    protected QueryRunner createQueryRunner()
     {
         Session defaultSession = testSessionBuilder()
                 .setCatalog("local")
@@ -68,14 +67,15 @@ public class TestQueryPlanDeterminism
         localQueryRunner.createCatalog(
                 defaultSession.getCatalog().get(),
                 new TpchConnectorFactory(1),
-                ImmutableMap.<String, String>of());
+                ImmutableMap.of());
 
-        localQueryRunner.getMetadata().addFunctions(CUSTOM_FUNCTIONS);
+        localQueryRunner.getMetadata().registerBuiltInFunctions(CUSTOM_FUNCTIONS);
 
         SessionPropertyManager sessionPropertyManager = localQueryRunner.getMetadata().getSessionPropertyManager();
         sessionPropertyManager.addSystemSessionProperties(TEST_SYSTEM_PROPERTIES);
         sessionPropertyManager.addConnectorSessionProperties(new ConnectorId(TESTING_CATALOG), TEST_CATALOG_PROPERTIES);
 
+        localQueryRunner.installPlugin(new SqlInvokedFunctionsPlugin());
         return localQueryRunner;
     }
 
@@ -184,6 +184,16 @@ public class TestQueryPlanDeterminism
     }
 
     @Override
+    public void testExplainValidate()
+    {
+    }
+
+    @Override
+    public void testSetSessionNativeWorkerSessionProperty()
+    {
+    }
+
+    @Override
     protected void assertAccessAllowed(@Language("SQL") String sql, TestingAccessControlManager.TestingPrivilege... deniedPrivileges)
     {
     }
@@ -208,10 +218,78 @@ public class TestQueryPlanDeterminism
     {
     }
 
+    @Test
+    public void testUse()
+    {
+        // USE statement is not supported
+    }
+
     @Override
     protected MaterializedResult computeExpected(@Language("SQL") String sql, List<? extends Type> resultTypes)
     {
         determinismChecker.checkPlanIsDeterministic(sql);
         return super.computeExpected(sql, resultTypes);
+    }
+
+    // Give more time for large queries in plan determinsm check.
+    @Override
+    @Test(timeOut = 100_000)
+    public void testLargeQuery()
+    {
+        super.testLargeQuery();
+    }
+
+    @Test
+    public void testTpchQ9deterministic()
+    {
+        //This uses a modified version of TPC-H Q9, because the tpch connector uses non-standard column names
+        determinismChecker.checkPlanIsDeterministic("SELECT\n" +
+                "  nation,\n" +
+                "  o_year,\n" +
+                "  sum(amount) AS sum_profit\n" +
+                "FROM (\n" +
+                "       SELECT\n" +
+                "         n.name                                                          AS nation,\n" +
+                "         extract(YEAR FROM o.orderdate)                                  AS o_year,\n" +
+                "         l.extendedprice * (1 - l.discount) - ps.supplycost * l.quantity AS amount\n" +
+                "       FROM\n" +
+                "         part p,\n" +
+                "         supplier s,\n" +
+                "         lineitem l,\n" +
+                "         partsupp ps,\n" +
+                "         orders o,\n" +
+                "         nation n\n" +
+                "       WHERE\n" +
+                "         s.suppkey = l.suppkey\n" +
+                "         AND ps.suppkey = l.suppkey\n" +
+                "         AND ps.partkey = l.partkey\n" +
+                "         AND p.partkey = l.partkey\n" +
+                "         AND o.orderkey = l.orderkey\n" +
+                "         AND s.nationkey = n.nationkey\n" +
+                "         AND p.name LIKE '%green%'\n" +
+                "     ) AS profit\n" +
+                "GROUP BY\n" +
+                "  nation,\n" +
+                "  o_year\n" +
+                "ORDER BY\n" +
+                "  nation,\n" +
+                "  o_year DESC\n");
+    }
+
+    @Test
+    public void testTpcdsQ6deterministic()
+    {
+        //This is a query inspired on TPC-DS Q6 that reproduces its plan nondeterminism problems
+        determinismChecker.checkPlanIsDeterministic("SELECT orderdate " +
+                "FROM orders o,\n" +
+                "     lineitem i\n" +
+                "WHERE o.orderdate =\n" +
+                "    (SELECT DISTINCT (orderdate)\n" +
+                "     FROM orders\n" +
+                "     WHERE totalprice > 2)\n" +
+                "  AND i.quantity > 1.2 *\n" +
+                "    (SELECT avg(j.quantity)\n" +
+                "     FROM lineitem j\n" +
+                "    )\n");
     }
 }

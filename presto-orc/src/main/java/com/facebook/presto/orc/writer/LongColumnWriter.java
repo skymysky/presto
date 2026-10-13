@@ -13,10 +13,16 @@
  */
 package com.facebook.presto.orc.writer;
 
-import com.facebook.presto.orc.checkpoint.BooleanStreamCheckpoint;
-import com.facebook.presto.orc.checkpoint.LongStreamCheckpoint;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.FixedWidthType;
+import com.facebook.presto.common.type.TimeType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.ColumnWriterOptions;
+import com.facebook.presto.orc.DwrfDataEncryptor;
+import com.facebook.presto.orc.OrcEncoding;
+import com.facebook.presto.orc.checkpoint.StreamCheckpoint;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
-import com.facebook.presto.orc.metadata.CompressionKind;
+import com.facebook.presto.orc.metadata.CompressedMetadataWriter;
 import com.facebook.presto.orc.metadata.MetadataWriter;
 import com.facebook.presto.orc.metadata.RowGroupIndex;
 import com.facebook.presto.orc.metadata.Stream;
@@ -27,11 +33,10 @@ import com.facebook.presto.orc.stream.LongOutputStream;
 import com.facebook.presto.orc.stream.LongOutputStreamDwrf;
 import com.facebook.presto.orc.stream.LongOutputStreamV2;
 import com.facebook.presto.orc.stream.PresentOutputStream;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.orc.stream.StreamDataOutput;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.slice.SliceOutput;
+import io.airlift.slice.Slice;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.io.IOException;
@@ -39,12 +44,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.LongFunction;
 import java.util.function.Supplier;
 
+import static com.facebook.presto.orc.OrcEncoding.DWRF;
 import static com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind.DIRECT;
 import static com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind.DIRECT_V2;
 import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
+import static com.facebook.presto.orc.writer.ColumnWriterUtils.buildRowGroupIndexes;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
@@ -54,35 +62,65 @@ public class LongColumnWriter
 {
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(LongColumnWriter.class).instanceSize();
     private final int column;
+    private final int sequence;
     private final Type type;
+    private final long typeSize;
     private final boolean compressed;
     private final ColumnEncoding columnEncoding;
     private final LongOutputStream dataStream;
-    private final PresentOutputStream presentStream;
 
     private final List<ColumnStatistics> rowGroupColumnStatistics = new ArrayList<>();
+    private final CompressedMetadataWriter metadataWriter;
+    private final LongFunction<Long> convertUnits;
+    private long columnStatisticsRetainedSizeInBytes;
+    private PresentOutputStream presentStream;
 
     private final Supplier<LongValueStatisticsBuilder> statisticsBuilderSupplier;
     private LongValueStatisticsBuilder statisticsBuilder;
 
     private boolean closed;
 
-    public LongColumnWriter(int column, Type type, CompressionKind compression, int bufferSize, boolean isDwrf, Supplier<LongValueStatisticsBuilder> statisticsBuilderSupplier)
+    public LongColumnWriter(
+            int column,
+            int sequence,
+            Type type,
+            ColumnWriterOptions columnWriterOptions,
+            Optional<DwrfDataEncryptor> dwrfEncryptor,
+            OrcEncoding orcEncoding,
+            Supplier<LongValueStatisticsBuilder> statisticsBuilderSupplier,
+            MetadataWriter metadataWriter)
     {
         checkArgument(column >= 0, "column is negative");
+        checkArgument(sequence >= 0, "sequence is negative");
+        checkArgument(type instanceof FixedWidthType, "Type is not instance of FixedWidthType");
+        requireNonNull(columnWriterOptions, "columnWriterOptions is null");
+        requireNonNull(dwrfEncryptor, "dwrfEncryptor is null");
+        requireNonNull(metadataWriter, "metadataWriter is null");
+
         this.column = column;
+        this.sequence = sequence;
         this.type = requireNonNull(type, "type is null");
-        this.compressed = requireNonNull(compression, "compression is null") != NONE;
-        this.columnEncoding = new ColumnEncoding(isDwrf ? DIRECT : DIRECT_V2, 0);
-        if (isDwrf) {
-            this.dataStream = new LongOutputStreamDwrf(compression, bufferSize, true, DATA);
+        this.typeSize = ((FixedWidthType) type).getFixedSize();
+        this.compressed = columnWriterOptions.getCompressionKind() != NONE;
+        if (orcEncoding == DWRF) {
+            this.columnEncoding = new ColumnEncoding(DIRECT, 0);
+            this.dataStream = new LongOutputStreamDwrf(columnWriterOptions, dwrfEncryptor, true, DATA);
         }
         else {
-            this.dataStream = new LongOutputStreamV2(compression, bufferSize, true, DATA);
+            this.columnEncoding = new ColumnEncoding(DIRECT_V2, 0);
+            this.dataStream = new LongOutputStreamV2(columnWriterOptions, true, DATA);
         }
-        this.presentStream = new PresentOutputStream(compression, bufferSize);
+        this.presentStream = new PresentOutputStream(columnWriterOptions, dwrfEncryptor);
+        this.metadataWriter = new CompressedMetadataWriter(metadataWriter, columnWriterOptions, dwrfEncryptor);
         this.statisticsBuilderSupplier = requireNonNull(statisticsBuilderSupplier, "statisticsBuilderSupplier is null");
         this.statisticsBuilder = statisticsBuilderSupplier.get();
+
+        if (this.type instanceof TimeType) {
+            this.convertUnits = longValue -> Math.multiplyExact(longValue, 1000L);
+        }
+        else {
+            this.convertUnits = longValue -> longValue;
+        }
     }
 
     @Override
@@ -95,11 +133,28 @@ public class LongColumnWriter
     public void beginRowGroup()
     {
         presentStream.recordCheckpoint();
+        beginDataRowGroup();
+    }
+
+    void beginDataRowGroup()
+    {
         dataStream.recordCheckpoint();
     }
 
+    void updatePresentStream(PresentOutputStream updatedPresentStream)
+    {
+        requireNonNull(updatedPresentStream, "updatedPresentStream is null");
+        checkState(presentStream.getBufferedBytes() == 0, "Present stream has some content");
+        presentStream = updatedPresentStream;
+    }
+
+    void updateRawSize(long rawSize)
+    {
+        statisticsBuilder.incrementRawSize(rawSize);
+    }
+
     @Override
-    public void writeBlock(Block block)
+    public long writeBlock(Block block)
     {
         checkState(!closed);
         checkArgument(block.getPositionCount() > 0, "Block is empty");
@@ -110,13 +165,24 @@ public class LongColumnWriter
         }
 
         // record values
+        int nonNullValueCount = 0;
         for (int position = 0; position < block.getPositionCount(); position++) {
             if (!block.isNull(position)) {
-                long value = type.getLong(block, position);
-                dataStream.writeLong(value);
-                statisticsBuilder.addValue(value);
+                long value = this.convertUnits.apply(type.getLong(block, position));
+                writeValue(value);
+                nonNullValueCount++;
             }
         }
+
+        long rawSize = nonNullValueCount * typeSize + (block.getPositionCount() - nonNullValueCount) * NULL_SIZE;
+        statisticsBuilder.incrementRawSize(rawSize);
+        return rawSize;
+    }
+
+    void writeValue(long value)
+    {
+        dataStream.writeLong(value);
+        statisticsBuilder.addValue(value);
     }
 
     @Override
@@ -125,6 +191,7 @@ public class LongColumnWriter
         checkState(!closed);
         ColumnStatistics statistics = statisticsBuilder.buildColumnStatistics();
         rowGroupColumnStatistics.add(statistics);
+        columnStatisticsRetainedSizeInBytes += statistics.getRetainedSizeInBytes();
         statisticsBuilder = statisticsBuilderSupplier.get();
         return ImmutableMap.of(column, statistics);
     }
@@ -145,49 +212,26 @@ public class LongColumnWriter
     }
 
     @Override
-    public List<Stream> writeIndexStreams(SliceOutput outputStream, MetadataWriter metadataWriter)
+    public List<StreamDataOutput> getIndexStreams(Optional<List<? extends StreamCheckpoint>> prependCheckpoints)
             throws IOException
     {
         checkState(closed);
 
-        ImmutableList.Builder<RowGroupIndex> rowGroupIndexes = ImmutableList.builder();
-
-        List<LongStreamCheckpoint> dataCheckpoints = dataStream.getCheckpoints();
-        Optional<List<BooleanStreamCheckpoint>> presentCheckpoints = presentStream.getCheckpoints();
-        for (int i = 0; i < rowGroupColumnStatistics.size(); i++) {
-            int groupId = i;
-            ColumnStatistics columnStatistics = rowGroupColumnStatistics.get(groupId);
-            LongStreamCheckpoint dataCheckpoint = dataCheckpoints.get(groupId);
-            Optional<BooleanStreamCheckpoint> presentCheckpoint = presentCheckpoints.map(checkpoints -> checkpoints.get(groupId));
-            List<Integer> positions = createLongColumnPositionList(compressed, dataCheckpoint, presentCheckpoint);
-            rowGroupIndexes.add(new RowGroupIndex(positions, columnStatistics));
-        }
-
-        int length = metadataWriter.writeRowIndexes(outputStream, rowGroupIndexes.build());
-        return ImmutableList.of(new Stream(column, StreamKind.ROW_INDEX, length, false));
-    }
-
-    private static List<Integer> createLongColumnPositionList(
-            boolean compressed,
-            LongStreamCheckpoint dataCheckpoint,
-            Optional<BooleanStreamCheckpoint> presentCheckpoint)
-    {
-        ImmutableList.Builder<Integer> positionList = ImmutableList.builder();
-        presentCheckpoint.ifPresent(booleanStreamCheckpoint -> positionList.addAll(booleanStreamCheckpoint.toPositionList(compressed)));
-        positionList.addAll(dataCheckpoint.toPositionList(compressed));
-        return positionList.build();
+        List<RowGroupIndex> rowGroupIndexes = buildRowGroupIndexes(compressed, rowGroupColumnStatistics, prependCheckpoints, presentStream, dataStream);
+        Slice slice = metadataWriter.writeRowIndexes(rowGroupIndexes);
+        Stream stream = new Stream(column, sequence, StreamKind.ROW_INDEX, slice.length(), false);
+        return ImmutableList.of(new StreamDataOutput(slice, stream));
     }
 
     @Override
-    public List<Stream> writeDataStreams(SliceOutput outputStream)
-            throws IOException
+    public List<StreamDataOutput> getDataStreams()
     {
         checkState(closed);
 
-        ImmutableList.Builder<Stream> dataStreams = ImmutableList.builder();
-        presentStream.writeDataStreams(column, outputStream).ifPresent(dataStreams::add);
-        dataStream.writeDataStreams(column, outputStream).ifPresent(dataStreams::add);
-        return dataStreams.build();
+        ImmutableList.Builder<StreamDataOutput> outputDataStreams = ImmutableList.builder();
+        presentStream.getStreamDataOutput(column, sequence).ifPresent(outputDataStreams::add);
+        outputDataStreams.add(dataStream.getStreamDataOutput(column, sequence));
+        return outputDataStreams.build();
     }
 
     @Override
@@ -199,8 +243,7 @@ public class LongColumnWriter
     @Override
     public long getRetainedBytes()
     {
-        // NOTE: we do not include stats because they should be small and it would be annoying to calculate the size
-        return INSTANCE_SIZE + dataStream.getRetainedBytes() + presentStream.getRetainedBytes();
+        return INSTANCE_SIZE + dataStream.getRetainedBytes() + presentStream.getRetainedBytes() + columnStatisticsRetainedSizeInBytes;
     }
 
     @Override
@@ -210,6 +253,7 @@ public class LongColumnWriter
         dataStream.reset();
         presentStream.reset();
         rowGroupColumnStatistics.clear();
+        columnStatisticsRetainedSizeInBytes = 0;
         statisticsBuilder = statisticsBuilderSupplier.get();
     }
 }

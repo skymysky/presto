@@ -13,7 +13,27 @@
  */
 package com.facebook.presto.orc.metadata.statistics;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+
 public interface StatisticsBuilder
 {
+    void addBlock(Type type, Block block);
+
+    default void addValue(Type type, Block block, int position)
+    {
+        throw new UnsupportedOperationException();
+    }
+
     ColumnStatistics buildColumnStatistics();
+
+    /**
+     * Increment the storage (after compression) size for a given column.
+     */
+    void incrementSize(long size);
+
+    /**
+     * Increment the raw data size of a column data before compression.
+     */
+    void incrementRawSize(long rawSize);
 }

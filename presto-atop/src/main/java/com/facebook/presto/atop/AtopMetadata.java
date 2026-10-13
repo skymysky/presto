@@ -14,6 +14,8 @@
 package com.facebook.presto.atop;
 
 import com.facebook.presto.atop.AtopTable.AtopColumn;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ColumnNotFoundException;
@@ -27,12 +29,9 @@ import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import java.util.List;
 import java.util.Map;
@@ -43,7 +42,7 @@ import java.util.stream.Stream;
 
 import static com.facebook.presto.atop.AtopTable.AtopColumn.END_TIME;
 import static com.facebook.presto.atop.AtopTable.AtopColumn.START_TIME;
-import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
 import static java.util.Objects.requireNonNull;
 
 public class AtopMetadata
@@ -86,7 +85,8 @@ public class AtopMetadata
     }
 
     @Override
-    public List<ConnectorTableLayoutResult> getTableLayouts(ConnectorSession session,
+    public ConnectorTableLayoutResult getTableLayoutForConstraint(
+            ConnectorSession session,
             ConnectorTableHandle table,
             Constraint<ColumnHandle> constraint,
             Optional<Set<ColumnHandle>> desiredColumns)
@@ -105,7 +105,7 @@ public class AtopMetadata
         }
         AtopTableLayoutHandle layoutHandle = new AtopTableLayoutHandle(tableHandle, startTimeDomain, endTimeDomain);
         ConnectorTableLayout tableLayout = getTableLayout(session, layoutHandle);
-        return ImmutableList.of(new ConnectorTableLayoutResult(tableLayout, constraint.getSummary()));
+        return new ConnectorTableLayoutResult(tableLayout, constraint.getSummary());
     }
 
     @Override
@@ -120,7 +120,10 @@ public class AtopMetadata
         AtopTableHandle atopTableHandle = (AtopTableHandle) tableHandle;
         ImmutableList.Builder<ColumnMetadata> columns = ImmutableList.builder();
         for (AtopColumn column : atopTableHandle.getTable().getColumns()) {
-            columns.add(new ColumnMetadata(column.getName(), typeManager.getType(column.getType())));
+            columns.add(ColumnMetadata.builder()
+                    .setName(normalizeIdentifier(session, column.getName()))
+                    .setType(typeManager.getType(column.getType()))
+                    .build());
         }
         SchemaTableName schemaTableName = new SchemaTableName(atopTableHandle.getSchema(), atopTableHandle.getTable().getName());
         return new ConnectorTableMetadata(schemaTableName, columns.build());

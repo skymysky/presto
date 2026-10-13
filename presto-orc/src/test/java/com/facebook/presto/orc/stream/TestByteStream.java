@@ -14,9 +14,8 @@
 package com.facebook.presto.orc.stream;
 
 import com.facebook.presto.orc.OrcCorruptionException;
-import com.facebook.presto.orc.OrcDecompressor;
+import com.facebook.presto.orc.TestingHiveOrcAggregatedMemoryContext;
 import com.facebook.presto.orc.checkpoint.ByteStreamCheckpoint;
-import com.facebook.presto.orc.memory.AggregatedMemoryContext;
 import io.airlift.slice.Slice;
 import org.testng.annotations.Test;
 
@@ -24,10 +23,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-
-import static com.facebook.presto.orc.OrcDecompressor.createOrcDecompressor;
-import static com.facebook.presto.orc.OrcWriter.DEFAULT_BUFFER_SIZE;
-import static com.facebook.presto.orc.metadata.CompressionKind.SNAPPY;
 
 public class TestByteStream
         extends AbstractTestValueStream<Byte, ByteStreamCheckpoint, ByteOutputStream, ByteInputStream>
@@ -80,7 +75,7 @@ public class TestByteStream
     @Override
     protected ByteOutputStream createValueOutputStream()
     {
-        return new ByteOutputStream(SNAPPY, DEFAULT_BUFFER_SIZE);
+        return new ByteOutputStream(getColumnWriterOptions(), Optional.empty());
     }
 
     @Override
@@ -93,8 +88,15 @@ public class TestByteStream
     protected ByteInputStream createValueStream(Slice slice)
             throws OrcCorruptionException
     {
-        Optional<OrcDecompressor> orcDecompressor = createOrcDecompressor(ORC_DATA_SOURCE_ID, SNAPPY, DEFAULT_BUFFER_SIZE);
-        return new ByteInputStream(new OrcInputStream(ORC_DATA_SOURCE_ID, slice.getInput(), orcDecompressor, new AggregatedMemoryContext()));
+        TestingHiveOrcAggregatedMemoryContext aggregatedMemoryContext = new TestingHiveOrcAggregatedMemoryContext();
+        return new ByteInputStream(new OrcInputStream(
+                ORC_DATA_SOURCE_ID,
+                new SharedBuffer(aggregatedMemoryContext.newOrcLocalMemoryContext("sharedDecompressionBuffer")),
+                slice.getInput(),
+                getOrcDecompressor(),
+                Optional.empty(),
+                aggregatedMemoryContext,
+                slice.getRetainedSize()));
     }
 
     @Override

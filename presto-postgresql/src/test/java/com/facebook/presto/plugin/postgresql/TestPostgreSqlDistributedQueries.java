@@ -13,165 +13,110 @@
  */
 package com.facebook.presto.plugin.postgresql;
 
-import com.facebook.presto.tests.AbstractTestQueries;
-import com.facebook.presto.tests.datatype.CreateAndInsertDataSetup;
-import com.facebook.presto.tests.datatype.CreateAsSelectDataSetup;
-import com.facebook.presto.tests.datatype.DataSetup;
-import com.facebook.presto.tests.datatype.DataType;
-import com.facebook.presto.tests.datatype.DataTypeTest;
-import com.facebook.presto.tests.sql.JdbcSqlExecutor;
-import com.facebook.presto.tests.sql.PrestoSqlExecutor;
-import io.airlift.testing.postgresql.TestingPostgreSqlServer;
+import com.facebook.presto.testing.QueryRunner;
+import com.facebook.presto.tests.AbstractTestDistributedQueries;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.tpch.TpchTable;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
-import java.io.IOException;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.util.function.Function;
-
 import static com.facebook.presto.plugin.postgresql.PostgreSqlQueryRunner.createPostgreSqlQueryRunner;
-import static com.facebook.presto.tests.datatype.DataType.varcharDataType;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
 
 @Test
 public class TestPostgreSqlDistributedQueries
-        extends AbstractTestQueries
+        extends AbstractTestDistributedQueries
 {
-    private final TestingPostgreSqlServer postgreSqlServer;
+    private PostgreSQLContainer postgresContainer;
 
     public TestPostgreSqlDistributedQueries()
-            throws Exception
     {
-        this(new TestingPostgreSqlServer("testuser", "tpch"));
+        this.postgresContainer = new PostgreSQLContainer("postgres:14")
+                .withDatabaseName("tpch")
+                .withUsername("testuser")
+                .withPassword("testpass");
+        this.postgresContainer.start();
     }
 
-    public TestPostgreSqlDistributedQueries(TestingPostgreSqlServer postgreSqlServer)
+    @Override
+    protected QueryRunner createQueryRunner()
             throws Exception
     {
-        super(() -> createPostgreSqlQueryRunner(postgreSqlServer, TpchTable.getTables()));
-        this.postgreSqlServer = postgreSqlServer;
+        return createPostgreSqlQueryRunner(postgresContainer.getJdbcUrl(), ImmutableMap.of(), TpchTable.getTables());
+    }
+
+    @Override
+    protected boolean supportsViews()
+    {
+        return false;
     }
 
     @AfterClass(alwaysRun = true)
     public final void destroy()
-            throws IOException
     {
-        postgreSqlServer.close();
+        postgresContainer.stop();
     }
 
     @Override
-    public void testLargeIn()
+    public void testInsert()
     {
-        // the PostgreSQL query fails with "stack depth limit exceeded"
-        // TODO: fix QueryBuilder not to generate such a large query
-        // https://github.com/prestodb/presto/issues/5752
+        // no op -- test not supported due to lack of support for array types.  See
+        // TestPostgreSqlIntegrationSmokeTest for insertion tests.
     }
 
-    @Test
-    public void testDropTable()
+    @Override
+    public void testDelete()
     {
-        assertUpdate("CREATE TABLE test_drop AS SELECT 123 x", 1);
-        assertTrue(getQueryRunner().tableExists(getSession(), "test_drop"));
-
-        assertUpdate("DROP TABLE test_drop");
-        assertFalse(getQueryRunner().tableExists(getSession(), "test_drop"));
+        // Delete is currently unsupported
     }
 
-    @Test
-    public void testViews()
-            throws Exception
+    @Override
+    public void testUpdate()
     {
-        execute("CREATE OR REPLACE VIEW tpch.test_view AS SELECT * FROM tpch.orders");
-
-        assertQuery("SELECT orderkey FROM test_view", "SELECT orderkey FROM orders");
-
-        execute("DROP VIEW IF EXISTS tpch.test_view");
+        // Updates are not supported by the connector
     }
 
-    @Test
-    public void testPrestoCreatedParameterizedVarchar()
+    @Override
+    public void testNonAutoCommitTransactionWithRollback()
     {
-        varcharDataTypeTest().execute(getQueryRunner(), prestoCreateAsSelect("presto_test_parameterized_varchar"));
+        // JDBC connectors do not support multi-statement writes within transactions
     }
 
-    @Test
-    public void testPostgreSqlCreatedParameterizedVarchar()
+    @Override
+    public void testNonAutoCommitTransactionWithCommit()
     {
-        varcharDataTypeTest().execute(getQueryRunner(), postgresCreateAndInsert("tpch.postgresql_test_parameterized_varchar"));
+        // JDBC connectors do not support multi-statement writes within transactions
     }
 
-    private DataTypeTest varcharDataTypeTest()
+    @Override
+    public void testNonAutoCommitTransactionWithFailAndRollback()
     {
-        return DataTypeTest.create()
-                .addRoundTrip(varcharDataType(10), "text_a")
-                .addRoundTrip(varcharDataType(255), "text_b")
-                .addRoundTrip(varcharDataType(65535), "text_d")
-                .addRoundTrip(varcharDataType(10485760), "text_f")
-                .addRoundTrip(varcharDataType(), "unbounded");
+        // JDBC connectors do not support multi-statement writes within transactions
     }
 
-    @Test
-    public void testPrestoCreatedParameterizedVarcharUnicode()
+    @Override
+    public void testPayloadJoinApplicability()
     {
-        unicodeVarcharDateTypeTest().execute(getQueryRunner(), prestoCreateAsSelect("postgresql_test_parameterized_varchar_unicode"));
+        // PostgreSQL does not support MAP type
     }
 
-    @Test
-    public void testPostgreSqlCreatedParameterizedVarcharUnicode()
+    @Override
+    public void testPayloadJoinCorrectness()
     {
-        unicodeVarcharDateTypeTest().execute(getQueryRunner(), postgresCreateAndInsert("tpch.postgresql_test_parameterized_varchar_unicode"));
+        // PostgreSQL does not support MAP type
     }
 
-    @Test
-    public void testPrestoCreatedParameterizedCharUnicode()
+    @Override
+    public void testRemoveRedundantCastToVarcharInJoinClause()
     {
-        unicodeDataTypeTest(DataType::charDataType).execute(getQueryRunner(), prestoCreateAsSelect("postgresql_test_parameterized_char_unicode"));
+        // PostgreSQL does not support MAP type
     }
 
-    @Test
-    public void testPostgreSqlCreatedParameterizedCharUnicode()
+    @Override
+    public void testSubfieldAccessControl()
     {
-        unicodeDataTypeTest(DataType::charDataType).execute(getQueryRunner(), postgresCreateAndInsert("tpch.postgresql_test_parameterized_char_unicode"));
+        // PostgreSQL does not support ROW type
     }
 
-    private DataTypeTest unicodeVarcharDateTypeTest()
-    {
-        return unicodeDataTypeTest(DataType::varcharDataType).addRoundTrip(varcharDataType(), "\u041d\u0443, \u043f\u043e\u0433\u043e\u0434\u0438!");
-    }
-
-    private DataTypeTest unicodeDataTypeTest(Function<Integer, DataType<String>> dataTypeFactory)
-    {
-        String sampleUnicodeText = "\u653b\u6bbb\u6a5f\u52d5\u968a";
-        String sampleFourByteUnicodeCharacter = "\uD83D\uDE02";
-
-        return DataTypeTest.create()
-                .addRoundTrip(dataTypeFactory.apply(sampleUnicodeText.length()), sampleUnicodeText)
-                .addRoundTrip(dataTypeFactory.apply(32), sampleUnicodeText)
-                .addRoundTrip(dataTypeFactory.apply(20000), sampleUnicodeText)
-                .addRoundTrip(dataTypeFactory.apply(1), sampleFourByteUnicodeCharacter);
-    }
-
-    private DataSetup prestoCreateAsSelect(String tableNamePrefix)
-    {
-        return new CreateAsSelectDataSetup(new PrestoSqlExecutor(getQueryRunner()), tableNamePrefix);
-    }
-
-    private DataSetup postgresCreateAndInsert(String tableNamePrefix)
-    {
-        return new CreateAndInsertDataSetup(new JdbcSqlExecutor(postgreSqlServer.getJdbcUrl()), tableNamePrefix);
-    }
-
-    private void execute(String sql)
-            throws SQLException
-    {
-        try (Connection connection = DriverManager.getConnection(postgreSqlServer.getJdbcUrl());
-                Statement statement = connection.createStatement()) {
-            statement.execute(sql);
-        }
-    }
+    // PostgreSQL specific tests should normally go in TestPostgreSqlIntegrationSmokeTest
 }

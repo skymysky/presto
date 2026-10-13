@@ -25,8 +25,8 @@ import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 
@@ -37,7 +37,6 @@ public class TestExampleRecordSet
 
     @Test
     public void testGetColumnTypes()
-            throws Exception
     {
         RecordSet recordSet = new ExampleRecordSet(new ExampleSplit("test", "schema", "table", dataUri), ImmutableList.of(
                 new ExampleColumnHandle("test", "text", createUnboundedVarcharType(), 0),
@@ -61,7 +60,6 @@ public class TestExampleRecordSet
 
     @Test
     public void testCursorSimple()
-            throws Exception
     {
         RecordSet recordSet = new ExampleRecordSet(new ExampleSplit("test", "schema", "table", dataUri), ImmutableList.of(
                 new ExampleColumnHandle("test", "text", createUnboundedVarcharType(), 0),
@@ -86,7 +84,6 @@ public class TestExampleRecordSet
 
     @Test
     public void testCursorMixedOrder()
-            throws Exception
     {
         RecordSet recordSet = new ExampleRecordSet(new ExampleSplit("test", "schema", "table", dataUri), ImmutableList.of(
                 new ExampleColumnHandle("test", "value", BIGINT, 1),

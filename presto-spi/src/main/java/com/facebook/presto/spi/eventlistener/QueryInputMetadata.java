@@ -13,34 +13,41 @@
  */
 package com.facebook.presto.spi.eventlistener;
 
+import com.facebook.presto.spi.statistics.TableStatistics;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import static java.util.Objects.requireNonNull;
 
 public class QueryInputMetadata
 {
-    private final String connectorId;
+    private final String catalogName;
     private final String schema;
     private final String table;
-    private final List<String> columns;
+    private final List<Column> columnObjects;
     private final Optional<Object> connectorInfo;
+    private final Optional<TableStatistics> statistics;
+    private final Optional<Object> commitOutput;
 
-    public QueryInputMetadata(String connectorId, String schema, String table, List<String> columns, Optional<Object> connectorInfo)
+    public QueryInputMetadata(String catalogName, String schema, String table, List<Column> columnObjects, Optional<Object> connectorInfo, Optional<TableStatistics> statistics, Optional<Object> commitOutput)
     {
-        this.connectorId = requireNonNull(connectorId, "connectorId is null");
+        this.catalogName = requireNonNull(catalogName, "catalogName is null");
         this.schema = requireNonNull(schema, "schema is null");
         this.table = requireNonNull(table, "table is null");
-        this.columns = requireNonNull(columns, "columns is null");
+        this.columnObjects = requireNonNull(columnObjects, "columns is null");
         this.connectorInfo = requireNonNull(connectorInfo, "connectorInfo is null");
+        this.statistics = requireNonNull(statistics, "table statistics is null");
+        this.commitOutput = requireNonNull(commitOutput, "commitOutput is null");
     }
 
     @JsonProperty
-    public String getConnectorId()
+    public String getCatalogName()
     {
-        return connectorId;
+        return catalogName;
     }
 
     @JsonProperty
@@ -58,12 +65,38 @@ public class QueryInputMetadata
     @JsonProperty
     public List<String> getColumns()
     {
-        return columns;
+        return Collections.unmodifiableList(columnObjects.stream().map(Column::getName).collect(Collectors.toList()));
+    }
+
+    @JsonProperty
+    public List<Column> getColumnObjects()
+    {
+        return columnObjects;
     }
 
     @JsonProperty
     public Optional<Object> getConnectorInfo()
     {
         return connectorInfo;
+    }
+
+    @JsonProperty
+    public Optional<TableStatistics> getStatistics()
+    {
+        return statistics;
+    }
+
+    /**
+     * Provides a {@code String} representation of the commit metadata.  For richer type support use {@link #getCommitOutput()}
+     */
+    public String getSerializedCommitOutput()
+    {
+        return commitOutput.map(Object::toString).orElse("");
+    }
+
+    @JsonProperty
+    public Optional<Object> getCommitOutput()
+    {
+        return commitOutput;
     }
 }

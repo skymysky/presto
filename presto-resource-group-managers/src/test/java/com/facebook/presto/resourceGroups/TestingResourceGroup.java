@@ -13,11 +13,12 @@
  */
 package com.facebook.presto.resourceGroups;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.spi.resourceGroups.ResourceGroup;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
+import com.facebook.presto.spi.resourceGroups.ResourceGroupQueryLimits;
 import com.facebook.presto.spi.resourceGroups.SchedulingPolicy;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
 
 import static java.util.Objects.requireNonNull;
 
@@ -35,8 +36,8 @@ public class TestingResourceGroup
     private int schedulingWeight;
     private SchedulingPolicy policy;
     private boolean jmxExport;
-    private Duration queuedTimeLimit;
-    private Duration runningTimeLimit;
+    private int workersPerQueryLimit;
+    private ResourceGroupQueryLimits resourceGroupQueryLimits;
 
     public TestingResourceGroup(ResourceGroupId id)
     {
@@ -170,26 +171,26 @@ public class TestingResourceGroup
     }
 
     @Override
-    public Duration getQueuedTimeLimit()
+    public ResourceGroupQueryLimits getPerQueryLimits()
     {
-        return queuedTimeLimit;
+        return resourceGroupQueryLimits;
     }
 
     @Override
-    public void setQueuedTimeLimit(Duration queuedTimeLimit)
+    public int getWorkersPerQueryLimit()
     {
-        this.queuedTimeLimit = queuedTimeLimit;
+        return workersPerQueryLimit;
     }
 
     @Override
-    public Duration getRunningTimeLimit()
+    public void setWorkersPerQueryLimit(int limit)
     {
-        return runningTimeLimit;
+        workersPerQueryLimit = limit;
     }
 
     @Override
-    public void setRunningTimeLimit(Duration runningTimeLimit)
+    public void setPerQueryLimits(ResourceGroupQueryLimits perQueryLimits)
     {
-        this.runningTimeLimit = runningTimeLimit;
+        this.resourceGroupQueryLimits = perQueryLimits;
     }
 }

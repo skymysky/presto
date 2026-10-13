@@ -13,8 +13,9 @@
  */
 package com.facebook.presto.spi.eventlistener;
 
+import com.facebook.presto.common.RuntimeStats;
+
 import java.time.Duration;
-import java.util.List;
 import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
@@ -22,64 +23,120 @@ import static java.util.Objects.requireNonNull;
 public class QueryStatistics
 {
     private final Duration cpuTime;
+    private final Duration retriedCpuTime;
     private final Duration wallTime;
+    private final Duration totalScheduledTime;
+    private final Duration waitingForPrerequisitesTime;
     private final Duration queuedTime;
+    private final Duration waitingForResourcesTime;
+    private final Duration semanticAnalyzingTime;
+    private final Duration columnAccessPermissionCheckingTime;
+    private final Duration dispatchingTime;
+    private final Duration planningTime;
     private final Optional<Duration> analysisTime;
-    private final Optional<Duration> distributedPlanningTime;
+    private final Duration executionTime;
+    private final Duration finishingTime;
 
-    private final long peakMemoryBytes;
+    private final int peakRunningTasks;
+    private final long peakUserMemoryBytes;
+    // peak of user + system memory
+    private final long peakTotalNonRevocableMemoryBytes;
+    private final long peakTaskUserMemory;
+    private final long peakTaskTotalMemory;
+    private final long peakNodeTotalMemory;
+    private final long shuffledBytes;
+    private final long shuffledRows;
     private final long totalBytes;
     private final long totalRows;
     private final long outputBytes;
     private final long outputRows;
-    private final long writtenBytes;
-    private final long writtenRows;
+    private final long writtenOutputBytes;
+    private final long writtenOutputRows;
+    private final long writtenIntermediateBytes;
+    private final long spilledBytes;
 
     private final double cumulativeMemory;
+    private final double cumulativeTotalMemory;
 
     private final int completedSplits;
     private final boolean complete;
-
-    private final List<StageCpuDistribution> cpuTimeDistribution;
-
-    private final List<String> operatorSummaries;
+    private final RuntimeStats runtimeStats;
+    private final long scanRawInputBytes;
 
     public QueryStatistics(
             Duration cpuTime,
+            Duration retriedCpuTime,
             Duration wallTime,
+            Duration totalScheduledTime,
+            Duration waitingForPrerequisitesTime,
             Duration queuedTime,
+            Duration waitingForResourcesTime,
+            Duration semanticAnalyzingTime,
+            Duration columnAccessPermissionCheckingTime,
+            Duration dispatchingTime,
+            Duration planningTime,
             Optional<Duration> analysisTime,
-            Optional<Duration> distributedPlanningTime,
-            long peakMemoryBytes,
+            Duration executionTime,
+            Duration finishingTime,
+            int peakRunningTasks,
+            long peakUserMemoryBytes,
+            long peakTotalNonRevocableMemoryBytes,
+            long peakTaskUserMemory,
+            long peakTaskTotalMemory,
+            long peakNodeTotalMemory,
+            long shuffledBytes,
+            long shuffledRows,
             long totalBytes,
             long totalRows,
             long outputBytes,
             long outputRows,
-            long writtenBytes,
-            long writtenRows,
+            long writtenOutputBytes,
+            long writtenOutputRows,
+            long writtenIntermediateBytes,
+            long spilledBytes,
             double cumulativeMemory,
+            double cumulativeTotalMemory,
             int completedSplits,
             boolean complete,
-            List<StageCpuDistribution> cpuTimeDistribution,
-            List<String> operatorSummaries)
+            RuntimeStats runtimeStats,
+            long scanRawInputBytes)
     {
         this.cpuTime = requireNonNull(cpuTime, "cpuTime is null");
+        this.retriedCpuTime = requireNonNull(retriedCpuTime, "retriedCpuTime is null");
         this.wallTime = requireNonNull(wallTime, "wallTime is null");
+        this.totalScheduledTime = requireNonNull(totalScheduledTime, "totalScheduledTime is null");
+        this.waitingForPrerequisitesTime = requireNonNull(waitingForPrerequisitesTime, "waitingForPrerequisitesTime is null");
         this.queuedTime = requireNonNull(queuedTime, "queuedTime is null");
+        this.waitingForResourcesTime = requireNonNull(waitingForResourcesTime, "waitingForResourcesTime is null");
+        this.semanticAnalyzingTime = requireNonNull(semanticAnalyzingTime, "semanticAnalyzingTime is null");
+        this.columnAccessPermissionCheckingTime = requireNonNull(columnAccessPermissionCheckingTime, "columnAccessPermissionCheckingTime is null");
+        this.dispatchingTime = requireNonNull(dispatchingTime, "dispatchingTime is null");
+        this.planningTime = requireNonNull(planningTime, "planningTime is null");
         this.analysisTime = requireNonNull(analysisTime, "analysisTime is null");
-        this.distributedPlanningTime = requireNonNull(distributedPlanningTime, "distributedPlanningTime is null");
-        this.peakMemoryBytes = peakMemoryBytes;
+        this.executionTime = requireNonNull(executionTime, "executionTime is null");
+        this.finishingTime = requireNonNull(finishingTime, "finishingTime is null");
+        this.peakRunningTasks = peakRunningTasks;
+        this.peakUserMemoryBytes = peakUserMemoryBytes;
+        this.peakTotalNonRevocableMemoryBytes = peakTotalNonRevocableMemoryBytes;
+        this.peakTaskUserMemory = peakTaskUserMemory;
+        this.peakTaskTotalMemory = peakTaskTotalMemory;
+        this.peakNodeTotalMemory = peakNodeTotalMemory;
+        this.shuffledBytes = shuffledBytes;
+        this.shuffledRows = shuffledRows;
         this.totalBytes = totalBytes;
         this.totalRows = totalRows;
         this.outputBytes = outputBytes;
         this.outputRows = outputRows;
-        this.writtenBytes = writtenBytes;
-        this.writtenRows = writtenRows;
+        this.writtenOutputBytes = writtenOutputBytes;
+        this.writtenOutputRows = writtenOutputRows;
+        this.writtenIntermediateBytes = writtenIntermediateBytes;
+        this.spilledBytes = spilledBytes;
         this.cumulativeMemory = cumulativeMemory;
+        this.cumulativeTotalMemory = cumulativeTotalMemory;
         this.completedSplits = completedSplits;
         this.complete = complete;
-        this.cpuTimeDistribution = requireNonNull(cpuTimeDistribution, "cpuTimeDistribution is null");
-        this.operatorSummaries = requireNonNull(operatorSummaries, "operatorSummaries is null");
+        this.runtimeStats = requireNonNull(runtimeStats, "runtimeStats is null");
+        this.scanRawInputBytes = scanRawInputBytes;
     }
 
     public Duration getCpuTime()
@@ -87,9 +144,24 @@ public class QueryStatistics
         return cpuTime;
     }
 
+    public Duration getRetriedCpuTime()
+    {
+        return retriedCpuTime;
+    }
+
     public Duration getWallTime()
     {
         return wallTime;
+    }
+
+    public Duration getTotalScheduledTime()
+    {
+        return totalScheduledTime;
+    }
+
+    public Duration getWaitingForPrerequisitesTime()
+    {
+        return waitingForPrerequisitesTime;
     }
 
     public Duration getQueuedTime()
@@ -97,19 +169,84 @@ public class QueryStatistics
         return queuedTime;
     }
 
+    public Duration getWaitingForResourcesTime()
+    {
+        return waitingForResourcesTime;
+    }
+
+    public Duration getSemanticAnalyzingTime()
+    {
+        return semanticAnalyzingTime;
+    }
+
+    public Duration getColumnAccessPermissionCheckingTime()
+    {
+        return columnAccessPermissionCheckingTime;
+    }
+
+    public Duration getDispatchingTime()
+    {
+        return dispatchingTime;
+    }
+
+    public Duration getPlanningTime()
+    {
+        return planningTime;
+    }
+
     public Optional<Duration> getAnalysisTime()
     {
         return analysisTime;
     }
 
-    public Optional<Duration> getDistributedPlanningTime()
+    public Duration getExecutionTime()
     {
-        return distributedPlanningTime;
+        return executionTime;
     }
 
-    public long getPeakMemoryBytes()
+    public Duration getFinishingTime()
     {
-        return peakMemoryBytes;
+        return finishingTime;
+    }
+
+    public int getPeakRunningTasks()
+    {
+        return peakRunningTasks;
+    }
+
+    public long getPeakUserMemoryBytes()
+    {
+        return peakUserMemoryBytes;
+    }
+
+    public long getPeakTotalNonRevocableMemoryBytes()
+    {
+        return peakTotalNonRevocableMemoryBytes;
+    }
+
+    public long getPeakTaskTotalMemory()
+    {
+        return peakTaskTotalMemory;
+    }
+
+    public long getPeakTaskUserMemory()
+    {
+        return peakTaskUserMemory;
+    }
+
+    public long getPeakNodeTotalMemory()
+    {
+        return peakNodeTotalMemory;
+    }
+
+    public long getShuffledBytes()
+    {
+        return shuffledBytes;
+    }
+
+    public long getShuffledRows()
+    {
+        return shuffledRows;
     }
 
     public long getTotalBytes()
@@ -132,19 +269,34 @@ public class QueryStatistics
         return outputRows;
     }
 
-    public long getWrittenBytes()
+    public long getWrittenOutputBytes()
     {
-        return writtenBytes;
+        return writtenOutputBytes;
     }
 
-    public long getWrittenRows()
+    public long getWrittenOutputRows()
     {
-        return writtenRows;
+        return writtenOutputRows;
+    }
+
+    public long getWrittenIntermediateBytes()
+    {
+        return writtenIntermediateBytes;
+    }
+
+    public long getSpilledBytes()
+    {
+        return spilledBytes;
     }
 
     public double getCumulativeMemory()
     {
         return cumulativeMemory;
+    }
+
+    public double getCumulativeTotalMemory()
+    {
+        return cumulativeTotalMemory;
     }
 
     public int getCompletedSplits()
@@ -157,13 +309,13 @@ public class QueryStatistics
         return complete;
     }
 
-    public List<StageCpuDistribution> getCpuTimeDistribution()
+    public RuntimeStats getRuntimeStats()
     {
-        return cpuTimeDistribution;
+        return runtimeStats;
     }
 
-    public List<String> getOperatorSummaries()
+    public long getScanRawInputBytes()
     {
-        return operatorSummaries;
+        return scanRawInputBytes;
     }
 }

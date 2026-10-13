@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.redis;
 
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.decoder.dummy.DummyRowDecoder;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
@@ -31,9 +32,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.log.Logger;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -46,6 +45,7 @@ import java.util.stream.Collectors;
 import static com.facebook.presto.redis.RedisHandleResolver.convertColumnHandle;
 import static com.facebook.presto.redis.RedisHandleResolver.convertLayout;
 import static com.facebook.presto.redis.RedisHandleResolver.convertTableHandle;
+import static java.util.Locale.ROOT;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -60,16 +60,15 @@ public class RedisMetadata
 
     private final String connectorId;
     private final boolean hideInternalColumns;
+    private boolean caseSensitiveNameMatchingEnabled;
 
     private final Supplier<Map<SchemaTableName, RedisTableDescription>> redisTableDescriptionSupplier;
-    private final Set<RedisInternalFieldDescription> internalFieldDescriptions;
 
     @Inject
     RedisMetadata(
             RedisConnectorId connectorId,
             RedisConnectorConfig redisConnectorConfig,
-            Supplier<Map<SchemaTableName, RedisTableDescription>> redisTableDescriptionSupplier,
-            Set<RedisInternalFieldDescription> internalFieldDescriptions)
+            Supplier<Map<SchemaTableName, RedisTableDescription>> redisTableDescriptionSupplier)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null").toString();
 
@@ -79,7 +78,7 @@ public class RedisMetadata
         log.debug("Loading redis table definitions from %s", redisConnectorConfig.getTableDescriptionDir().getAbsolutePath());
 
         this.redisTableDescriptionSupplier = Suppliers.memoize(redisTableDescriptionSupplier::get)::get;
-        this.internalFieldDescriptions = requireNonNull(internalFieldDescriptions, "internalFieldDescriptions is null");
+        this.caseSensitiveNameMatchingEnabled = redisConnectorConfig.isCaseSensitiveNameMatchingEnabled();
     }
 
     @Override
@@ -124,11 +123,11 @@ public class RedisMetadata
     @Override
     public ConnectorTableMetadata getTableMetadata(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        return getTableMetadata(convertTableHandle(tableHandle).toSchemaTableName());
+        return getTableMetadata(session, convertTableHandle(tableHandle).toSchemaTableName());
     }
 
     @Override
-    public List<ConnectorTableLayoutResult> getTableLayouts(
+    public ConnectorTableLayoutResult getTableLayoutForConstraint(
             ConnectorSession session,
             ConnectorTableHandle table,
             Constraint<ColumnHandle> constraint,
@@ -138,7 +137,7 @@ public class RedisMetadata
 
         ConnectorTableLayout layout = new ConnectorTableLayout(new RedisTableLayoutHandle(tableHandle));
 
-        return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
+        return new ConnectorTableLayoutResult(layout, constraint.getSummary());
     }
 
     @Override
@@ -147,8 +146,7 @@ public class RedisMetadata
         RedisTableLayoutHandle layout = convertLayout(handle);
 
         // tables in this connector have a single layout
-        return getTableLayouts(session, layout.getTable(), Constraint.alwaysTrue(), Optional.empty())
-                .get(0)
+        return getTableLayoutForConstraint(session, layout.getTable(), Constraint.alwaysTrue(), Optional.empty())
                 .getTableLayout();
     }
 
@@ -200,8 +198,8 @@ public class RedisMetadata
             }
         }
 
-        for (RedisInternalFieldDescription field : internalFieldDescriptions) {
-            columnHandles.put(field.getName(), field.getColumnHandle(connectorId, index, hideInternalColumns));
+        for (RedisInternalFieldDescription field : RedisInternalFieldDescription.values()) {
+            columnHandles.put(field.getColumnName(), field.getColumnHandle(connectorId, index, hideInternalColumns));
             index++;
         }
 
@@ -216,15 +214,15 @@ public class RedisMetadata
         ImmutableMap.Builder<SchemaTableName, List<ColumnMetadata>> columns = ImmutableMap.builder();
 
         List<SchemaTableName> tableNames;
-        if (prefix.getSchemaName() == null) {
-            tableNames = listTables(session, null);
+        if (prefix.getTableName() == null) {
+            tableNames = listTables(session, prefix.getSchemaName());
         }
         else {
             tableNames = ImmutableList.of(new SchemaTableName(prefix.getSchemaName(), prefix.getTableName()));
         }
 
         for (SchemaTableName tableName : tableNames) {
-            ConnectorTableMetadata tableMetadata = getTableMetadata(tableName);
+            ConnectorTableMetadata tableMetadata = getTableMetadata(session, tableName);
             // table can disappear during listing operation
             if (tableMetadata != null) {
                 columns.put(tableName, tableMetadata.getColumns());
@@ -246,8 +244,7 @@ public class RedisMetadata
         return redisTableDescriptionSupplier.get();
     }
 
-    @SuppressWarnings("ValueOfIncrementOrDecrementUsed")
-    private ConnectorTableMetadata getTableMetadata(SchemaTableName schemaTableName)
+    private ConnectorTableMetadata getTableMetadata(ConnectorSession session, SchemaTableName schemaTableName)
     {
         RedisTableDescription table = getDefinedTables().get(schemaTableName);
         if (table == null) {
@@ -256,25 +253,31 @@ public class RedisMetadata
 
         ImmutableList.Builder<ColumnMetadata> builder = ImmutableList.builder();
 
-        appendFields(builder, table.getKey());
-        appendFields(builder, table.getValue());
+        appendFields(session, builder, table.getKey());
+        appendFields(session, builder, table.getValue());
 
-        for (RedisInternalFieldDescription fieldDescription : internalFieldDescriptions) {
-            builder.add(fieldDescription.getColumnMetadata(hideInternalColumns));
+        for (RedisInternalFieldDescription fieldDescription : RedisInternalFieldDescription.values()) {
+            builder.add(fieldDescription.getColumnMetadata(hideInternalColumns, normalizeIdentifier(session, fieldDescription.getColumnName())));
         }
 
         return new ConnectorTableMetadata(schemaTableName, builder.build());
     }
 
-    private static void appendFields(ImmutableList.Builder<ColumnMetadata> builder, RedisTableFieldGroup group)
+    private void appendFields(ConnectorSession session, ImmutableList.Builder<ColumnMetadata> builder, RedisTableFieldGroup group)
     {
         if (group != null) {
             List<RedisTableFieldDescription> fields = group.getFields();
             if (fields != null) {
                 for (RedisTableFieldDescription fieldDescription : fields) {
-                    builder.add(fieldDescription.getColumnMetadata());
+                    builder.add(fieldDescription.getColumnMetadata(normalizeIdentifier(session, fieldDescription.getName())));
                 }
             }
         }
+    }
+
+    @Override
+    public String normalizeIdentifier(ConnectorSession session, String identifier)
+    {
+        return caseSensitiveNameMatchingEnabled ? identifier : identifier.toLowerCase(ROOT);
     }
 }

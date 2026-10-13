@@ -13,31 +13,33 @@
  */
 package com.facebook.presto.hive.s3;
 
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.configuration.ConfigSecuritySensitive;
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
+import com.facebook.airlift.units.MinDataSize;
+import com.facebook.airlift.units.MinDuration;
 import com.google.common.base.StandardSystemProperty;
-import io.airlift.configuration.Config;
-import io.airlift.configuration.ConfigDescription;
-import io.airlift.configuration.ConfigSecuritySensitive;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
-import io.airlift.units.MinDataSize;
-import io.airlift.units.MinDuration;
-
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 
 import java.io.File;
 import java.util.concurrent.TimeUnit;
 
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 
 public class HiveS3Config
 {
     private String s3AwsAccessKey;
     private String s3AwsSecretKey;
     private String s3Endpoint;
+    private PrestoS3StorageClass s3StorageClass = PrestoS3StorageClass.STANDARD;
     private PrestoS3SignerType s3SignerType;
-    private boolean s3PathStyleAccess = false;
-    private boolean s3UseInstanceCredentials = true;
+    private boolean s3PathStyleAccess;
+    private boolean s3UseInstanceCredentials;
+    private String s3IamRole;
+    private String s3IamRoleSessionName = "presto-session";
     private boolean s3SslEnabled = true;
     private boolean s3SseEnabled;
     private PrestoS3SseType s3SseType = PrestoS3SseType.S3;
@@ -56,6 +58,22 @@ public class HiveS3Config
     private DataSize s3MultipartMinPartSize = new DataSize(5, MEGABYTE);
     private boolean pinS3ClientToCurrentRegion;
     private String s3UserAgentPrefix = "";
+    private PrestoS3AclType s3AclType = PrestoS3AclType.PRIVATE;
+    private boolean skipGlacierObjects;
+    private boolean s3WebIdentityEnabled;
+
+    public boolean isS3WebIdentityEnabled()
+    {
+        return s3WebIdentityEnabled;
+    }
+
+    @Config("hive.s3.web.identity.auth.enabled")
+    @ConfigDescription("Enable web identity token authentication for assuming an AWS IAM role")
+    public HiveS3Config setS3WebIdentityEnabled(boolean s3WebIdentityEnabled)
+    {
+        this.s3WebIdentityEnabled = s3WebIdentityEnabled;
+        return this;
+    }
 
     public String getS3AwsAccessKey()
     {
@@ -63,6 +81,7 @@ public class HiveS3Config
     }
 
     @Config("hive.s3.aws-access-key")
+    @ConfigSecuritySensitive
     public HiveS3Config setS3AwsAccessKey(String s3AwsAccessKey)
     {
         this.s3AwsAccessKey = s3AwsAccessKey;
@@ -94,6 +113,20 @@ public class HiveS3Config
         return this;
     }
 
+    @NotNull
+    public PrestoS3StorageClass getS3StorageClass()
+    {
+        return s3StorageClass;
+    }
+
+    @Config("hive.s3.storage-class")
+    @ConfigDescription("AWS S3 storage class to use when writing the data")
+    public HiveS3Config setS3StorageClass(PrestoS3StorageClass s3StorageClass)
+    {
+        this.s3StorageClass = s3StorageClass;
+        return this;
+    }
+
     public PrestoS3SignerType getS3SignerType()
     {
         return s3SignerType;
@@ -119,15 +152,43 @@ public class HiveS3Config
         return this;
     }
 
+    @Deprecated
     public boolean isS3UseInstanceCredentials()
     {
         return s3UseInstanceCredentials;
     }
 
+    @Deprecated
     @Config("hive.s3.use-instance-credentials")
     public HiveS3Config setS3UseInstanceCredentials(boolean s3UseInstanceCredentials)
     {
         this.s3UseInstanceCredentials = s3UseInstanceCredentials;
+        return this;
+    }
+
+    public String getS3IamRole()
+    {
+        return s3IamRole;
+    }
+
+    @Config("hive.s3.iam-role")
+    @ConfigDescription("AWS IAM role to assume to access S3 buckets")
+    public HiveS3Config setS3IamRole(String s3IamRole)
+    {
+        this.s3IamRole = s3IamRole;
+        return this;
+    }
+
+    public String getS3IamRoleSessionName()
+    {
+        return s3IamRoleSessionName;
+    }
+
+    @Config("hive.s3.iam-role-session-name")
+    @ConfigDescription("AWS STS session name when IAM role to assume to access S3 buckets")
+    public HiveS3Config setS3IamRoleSessionName(String s3IamRoleSessionName)
+    {
+        this.s3IamRoleSessionName = s3IamRoleSessionName;
         return this;
     }
 
@@ -372,6 +433,32 @@ public class HiveS3Config
     public HiveS3Config setS3UserAgentPrefix(String s3UserAgentPrefix)
     {
         this.s3UserAgentPrefix = s3UserAgentPrefix;
+        return this;
+    }
+
+    @NotNull
+    public PrestoS3AclType getS3AclType()
+    {
+        return s3AclType;
+    }
+
+    @Config("hive.s3.upload-acl-type")
+    @ConfigDescription("Canned ACL type for S3 uploads")
+    public HiveS3Config setS3AclType(PrestoS3AclType s3AclType)
+    {
+        this.s3AclType = s3AclType;
+        return this;
+    }
+
+    public boolean isSkipGlacierObjects()
+    {
+        return skipGlacierObjects;
+    }
+
+    @Config("hive.s3.skip-glacier-objects")
+    public HiveS3Config setSkipGlacierObjects(boolean skipGlacierObjects)
+    {
+        this.skipGlacierObjects = skipGlacierObjects;
         return this;
     }
 }

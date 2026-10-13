@@ -14,16 +14,12 @@
 package com.facebook.presto.accumulo.model;
 
 import com.facebook.presto.accumulo.serializers.AccumuloRowSerializer;
-import com.facebook.presto.block.BlockEncodingManager;
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
-import com.facebook.presto.sql.analyzer.FeaturesConfig;
-import com.facebook.presto.type.TypeRegistry;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
@@ -33,18 +29,19 @@ import java.sql.Time;
 import java.sql.Timestamp;
 import java.util.GregorianCalendar;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimeType.TIME;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimeType.TIME;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.testng.Assert.assertEquals;
 
@@ -52,14 +49,12 @@ public class TestField
 {
     @Test(expectedExceptions = NullPointerException.class, expectedExceptionsMessageRegExp = "type is null")
     public void testTypeIsNull()
-            throws Exception
     {
         new Field(null, null);
     }
 
     @Test
     public void testArray()
-            throws Exception
     {
         Type type = new ArrayType(VARCHAR);
         Block expected = AccumuloRowSerializer.getBlockFromArray(VARCHAR, ImmutableList.of("a", "b", "c"));
@@ -75,7 +70,6 @@ public class TestField
 
     @Test
     public void testBoolean()
-            throws Exception
     {
         Type type = BOOLEAN;
         Field f1 = new Field(true, type);
@@ -96,7 +90,6 @@ public class TestField
 
     @Test
     public void testDate()
-            throws Exception
     {
         Type type = DATE;
         Date expected = new Date(new GregorianCalendar(1999, 0, 1).getTime().getTime());
@@ -112,7 +105,6 @@ public class TestField
 
     @Test
     public void testDouble()
-            throws Exception
     {
         Type type = DOUBLE;
         Double expected = 123.45678;
@@ -128,7 +120,6 @@ public class TestField
 
     @Test
     public void testFloat()
-            throws Exception
     {
         Type type = REAL;
         Float expected = 123.45678f;
@@ -144,7 +135,6 @@ public class TestField
 
     @Test
     public void testInt()
-            throws Exception
     {
         Type type = INTEGER;
         Integer expected = 12345678;
@@ -160,7 +150,6 @@ public class TestField
 
     @Test
     public void testLong()
-            throws Exception
     {
         Type type = BIGINT;
         Long expected = 12345678L;
@@ -176,13 +165,10 @@ public class TestField
 
     @Test
     public void testMap()
-            throws Exception
     {
-        TypeManager typeManager = new TypeRegistry();
-        // associate typeManager with a function registry
-        new FunctionRegistry(typeManager, new BlockEncodingManager(typeManager), new FeaturesConfig());
+        FunctionAndTypeManager functionAndTypeManager = createTestFunctionAndTypeManager();
 
-        Type type = typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
+        Type type = functionAndTypeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
                 TypeSignatureParameter.of(VARCHAR.getTypeSignature()),
                 TypeSignatureParameter.of(BIGINT.getTypeSignature())));
         Block expected = AccumuloRowSerializer.getBlockFromMap(type, ImmutableMap.of("a", 1L, "b", 2L, "c", 3L));
@@ -195,7 +181,6 @@ public class TestField
 
     @Test
     public void testSmallInt()
-            throws Exception
     {
         Type type = SMALLINT;
         Short expected = 12345;
@@ -211,7 +196,6 @@ public class TestField
 
     @Test
     public void testTime()
-            throws Exception
     {
         Type type = TIME;
         Time expected = new Time(new GregorianCalendar(1999, 0, 1, 12, 30, 0).getTime().getTime());
@@ -227,7 +211,6 @@ public class TestField
 
     @Test
     public void testTimestamp()
-            throws Exception
     {
         Type type = TIMESTAMP;
         Timestamp expected = new Timestamp(new GregorianCalendar(1999, 0, 1, 12, 30, 0).getTime().getTime());
@@ -243,7 +226,6 @@ public class TestField
 
     @Test
     public void testTinyInt()
-            throws Exception
     {
         Type type = TINYINT;
         Byte expected = 123;
@@ -259,7 +241,6 @@ public class TestField
 
     @Test
     public void testVarbinary()
-            throws Exception
     {
         Type type = VARBINARY;
         byte[] expected = "O'Leary".getBytes(UTF_8);
@@ -275,7 +256,6 @@ public class TestField
 
     @Test
     public void testVarchar()
-            throws Exception
     {
         Type type = VARCHAR;
         String expected = "O'Leary";

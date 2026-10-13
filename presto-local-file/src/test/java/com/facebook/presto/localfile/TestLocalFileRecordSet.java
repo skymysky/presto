@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.localfile;
 
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import org.testng.annotations.Test;
 
 import java.util.List;
@@ -34,7 +34,6 @@ public class TestLocalFileRecordSet
 
     @Test
     public void testSimpleCursor()
-            throws Exception
     {
         String location = "example-data";
         LocalFileTables localFileTables = new LocalFileTables(new LocalFileConfig().setHttpRequestLogLocation(getResourceFilePath(location)));
@@ -45,7 +44,6 @@ public class TestLocalFileRecordSet
 
     @Test
     public void testGzippedData()
-            throws Exception
     {
         String location = "example-gzipped-data";
         LocalFileTables localFileTables = new LocalFileTables(new LocalFileConfig().setHttpRequestLogLocation(getResourceFilePath(location)));

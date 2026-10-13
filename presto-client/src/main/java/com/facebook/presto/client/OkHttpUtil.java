@@ -13,11 +13,15 @@
  */
 package com.facebook.presto.client;
 
+import com.facebook.airlift.security.pem.PemReader;
+import com.google.common.base.CharMatcher;
 import com.google.common.net.HostAndPort;
+import okhttp.internal.tls.LegacyHostnameVerifier;
 import okhttp3.Call;
 import okhttp3.Callback;
 import okhttp3.Credentials;
 import okhttp3.Interceptor;
+import okhttp3.JavaNetCookieJar;
 import okhttp3.OkHttpClient;
 import okhttp3.Response;
 
@@ -27,23 +31,34 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
+import javax.security.auth.x500.X500Principal;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.CookieManager;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
+import java.nio.file.Paths;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateExpiredException;
+import java.security.cert.CertificateNotYetValidException;
+import java.security.cert.X509Certificate;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.net.HttpHeaders.AUTHORIZATION;
 import static com.google.common.net.HttpHeaders.USER_AGENT;
 import static java.net.Proxy.Type.HTTP;
 import static java.net.Proxy.Type.SOCKS;
+import static java.nio.file.Files.newInputStream;
+import static java.util.Collections.list;
 import static java.util.Objects.requireNonNull;
 
 public final class OkHttpUtil
@@ -81,12 +96,27 @@ public final class OkHttpUtil
                 .build());
     }
 
+    public static Interceptor tokenAuth(String accessToken)
+    {
+        requireNonNull(accessToken, "accessToken is null");
+        checkArgument(CharMatcher.inRange((char) 33, (char) 126).matchesAllOf(accessToken));
+
+        return chain -> chain.proceed(chain.request().newBuilder()
+                .addHeader(AUTHORIZATION, "Bearer " + accessToken)
+                .build());
+    }
+
     public static void setupTimeouts(OkHttpClient.Builder clientBuilder, int timeout, TimeUnit unit)
     {
         clientBuilder
                 .connectTimeout(timeout, unit)
                 .readTimeout(timeout, unit)
                 .writeTimeout(timeout, unit);
+    }
+
+    public static void setupCookieJar(OkHttpClient.Builder clientBuilder)
+    {
+        clientBuilder.cookieJar(new JavaNetCookieJar(new CookieManager()));
     }
 
     public static void setupSocksProxy(OkHttpClient.Builder clientBuilder, Optional<HostAndPort> socksProxy)
@@ -111,12 +141,49 @@ public final class OkHttpUtil
         return InetSocketAddress.createUnresolved(address.getHost(), address.getPort());
     }
 
+    public static void setupInsecureSsl(OkHttpClient.Builder clientBuilder)
+    {
+        try {
+            X509TrustManager trustAllCerts = new X509TrustManager()
+            {
+                @Override
+                public void checkClientTrusted(X509Certificate[] chain, String authType)
+                {
+                    throw new UnsupportedOperationException("checkClientTrusted should not be called");
+                }
+
+                @Override
+                public void checkServerTrusted(X509Certificate[] chain, String authType)
+                {
+                    // skip validation of server certificate
+                }
+
+                @Override
+                public X509Certificate[] getAcceptedIssuers()
+                {
+                    return new X509Certificate[0];
+                }
+            };
+
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, new TrustManager[] {trustAllCerts}, new SecureRandom());
+
+            clientBuilder.sslSocketFactory(sslContext.getSocketFactory(), trustAllCerts);
+            clientBuilder.hostnameVerifier((hostname, session) -> true);
+        }
+        catch (GeneralSecurityException e) {
+            throw new ClientException("Error setting up SSL: " + e.getMessage(), e);
+        }
+    }
+
     public static void setupSsl(
             OkHttpClient.Builder clientBuilder,
             Optional<String> keyStorePath,
             Optional<String> keyStorePassword,
+            Optional<String> keystoreType,
             Optional<String> trustStorePath,
-            Optional<String> trustStorePassword)
+            Optional<String> trustStorePassword,
+            Optional<String> trustStoreType)
     {
         if (!keyStorePath.isPresent() && !trustStorePath.isPresent()) {
             return;
@@ -127,25 +194,33 @@ public final class OkHttpUtil
             KeyStore keyStore = null;
             KeyManager[] keyManagers = null;
             if (keyStorePath.isPresent()) {
-                char[] keyPassword = keyStorePassword.map(String::toCharArray).orElse(null);
-
-                keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
-                try (InputStream in = new FileInputStream(keyStorePath.get())) {
-                    keyStore.load(in, keyPassword);
+                checkArgument(keystoreType.isPresent(), "keystore type is not present");
+                char[] keyManagerPassword;
+                try {
+                    // attempt to read the key store as a PEM file
+                    keyStore = PemReader.loadKeyStore(Paths.get(keyStorePath.get()).toFile(), Paths.get(keyStorePath.get()).toFile(), keyStorePassword);
+                    // for PEM encoded keys, the password is used to decrypt the specific key (and does not protect the keystore itself)
+                    keyManagerPassword = new char[0];
                 }
+                catch (IOException | GeneralSecurityException ignored) {
+                    keyManagerPassword = keyStorePassword.map(String::toCharArray).orElse(null);
 
+                    keyStore = KeyStore.getInstance(keystoreType.get());
+                    try (InputStream in = newInputStream(Paths.get(keyStorePath.get()))) {
+                        keyStore.load(in, keyManagerPassword);
+                    }
+                }
+                validateCertificates(keyStore);
                 KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-                keyManagerFactory.init(keyStore, keyPassword);
+                keyManagerFactory.init(keyStore, keyManagerPassword);
                 keyManagers = keyManagerFactory.getKeyManagers();
             }
 
             // load TrustStore if configured, otherwise use KeyStore
             KeyStore trustStore = keyStore;
             if (trustStorePath.isPresent()) {
-                trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
-                try (InputStream in = new FileInputStream(trustStorePath.get())) {
-                    trustStore.load(in, trustStorePassword.map(String::toCharArray).orElse(null));
-                }
+                checkArgument(trustStoreType.isPresent(), "truststore type is not present");
+                trustStore = loadTrustStore(Paths.get(trustStorePath.get()).toFile(), trustStorePassword, trustStoreType.get());
             }
 
             // create TrustManagerFactory
@@ -164,10 +239,60 @@ public final class OkHttpUtil
             sslContext.init(keyManagers, new TrustManager[] {trustManager}, null);
 
             clientBuilder.sslSocketFactory(sslContext.getSocketFactory(), trustManager);
+            clientBuilder.hostnameVerifier(LegacyHostnameVerifier.INSTANCE);
         }
         catch (GeneralSecurityException | IOException e) {
             throw new ClientException("Error setting up SSL: " + e.getMessage(), e);
         }
+    }
+
+    private static void validateCertificates(KeyStore keyStore)
+            throws GeneralSecurityException
+    {
+        for (String alias : list(keyStore.aliases())) {
+            if (!keyStore.isKeyEntry(alias)) {
+                continue;
+            }
+            Certificate certificate = keyStore.getCertificate(alias);
+            if (!(certificate instanceof X509Certificate)) {
+                continue;
+            }
+
+            try {
+                ((X509Certificate) certificate).checkValidity();
+            }
+            catch (CertificateExpiredException e) {
+                throw new CertificateExpiredException("KeyStore certificate is expired: " + e.getMessage());
+            }
+            catch (CertificateNotYetValidException e) {
+                throw new CertificateNotYetValidException("KeyStore certificate is not yet valid: " + e.getMessage());
+            }
+        }
+    }
+
+    private static KeyStore loadTrustStore(File trustStorePath, Optional<String> trustStorePassword, String trustStoreType)
+            throws IOException, GeneralSecurityException
+    {
+        KeyStore trustStore = KeyStore.getInstance(trustStoreType);
+        try {
+            // attempt to read the trust store as a PEM file
+            List<X509Certificate> certificateChain = PemReader.readCertificateChain(trustStorePath);
+            if (!certificateChain.isEmpty()) {
+                trustStore.load(null, null);
+                for (X509Certificate certificate : certificateChain) {
+                    X500Principal principal = certificate.getSubjectX500Principal();
+                    trustStore.setCertificateEntry(principal.getName(), certificate);
+                }
+                return trustStore;
+            }
+        }
+        catch (IOException | GeneralSecurityException ignored) {
+        }
+
+        try (InputStream in = newInputStream(trustStorePath.toPath())) {
+            trustStore.load(in, trustStorePassword.map(String::toCharArray).orElse(null));
+        }
+        return trustStore;
     }
 
     public static void setupKerberos(
@@ -188,5 +313,11 @@ public final class OkHttpUtil
                 credentialCache);
         clientBuilder.addInterceptor(handler);
         clientBuilder.authenticator(handler);
+    }
+
+    public static void setupGCSOauth(OkHttpClient.Builder clientBuilder, String credentialPath, Optional<String> gcsOAuthScopesString)
+    {
+        GCSOAuthInterceptor handler = new GCSOAuthInterceptor(credentialPath, gcsOAuthScopesString);
+        clientBuilder.addInterceptor(handler);
     }
 }

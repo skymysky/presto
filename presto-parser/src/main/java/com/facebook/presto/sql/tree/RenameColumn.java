@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.sql.tree;
 
+import com.facebook.presto.spi.analyzer.UpdateInfo;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -28,23 +29,27 @@ public class RenameColumn
     private final QualifiedName table;
     private final Identifier source;
     private final Identifier target;
+    private final boolean tableExists;
+    private final boolean columnExists;
 
-    public RenameColumn(QualifiedName table, Identifier source, Identifier target)
+    public RenameColumn(QualifiedName table, Identifier source, Identifier target, boolean tableExists, boolean columnExists)
     {
-        this(Optional.empty(), table, source, target);
+        this(Optional.empty(), table, source, target, tableExists, columnExists);
     }
 
-    public RenameColumn(NodeLocation location, QualifiedName table, Identifier source, Identifier target)
+    public RenameColumn(NodeLocation location, QualifiedName table, Identifier source, Identifier target, boolean tableExists, boolean columnExists)
     {
-        this(Optional.of(location), table, source, target);
+        this(Optional.of(location), table, source, target, tableExists, columnExists);
     }
 
-    private RenameColumn(Optional<NodeLocation> location, QualifiedName table, Identifier source, Identifier target)
+    private RenameColumn(Optional<NodeLocation> location, QualifiedName table, Identifier source, Identifier target, boolean tableExists, boolean columnExists)
     {
         super(location);
         this.table = requireNonNull(table, "table is null");
         this.source = requireNonNull(source, "source is null");
         this.target = requireNonNull(target, "target is null");
+        this.tableExists = tableExists;
+        this.columnExists = columnExists;
     }
 
     public QualifiedName getTable()
@@ -62,6 +67,16 @@ public class RenameColumn
         return target;
     }
 
+    public boolean isTableExists()
+    {
+        return tableExists;
+    }
+
+    public boolean isColumnExists()
+    {
+        return columnExists;
+    }
+
     @Override
     public <R, C> R accept(AstVisitor<R, C> visitor, C context)
     {
@@ -72,6 +87,12 @@ public class RenameColumn
     public List<Node> getChildren()
     {
         return ImmutableList.of();
+    }
+
+    @Override
+    public UpdateInfo getUpdateInfo()
+    {
+        return new UpdateInfo("RENAME COLUMN", table.toString());
     }
 
     @Override
@@ -86,13 +107,15 @@ public class RenameColumn
         RenameColumn that = (RenameColumn) o;
         return Objects.equals(table, that.table) &&
                 Objects.equals(source, that.source) &&
-                Objects.equals(target, that.target);
+                Objects.equals(target, that.target) &&
+                Objects.equals(tableExists, that.tableExists) &&
+                Objects.equals(columnExists, that.columnExists);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(table, source, target);
+        return Objects.hash(table, source, target, tableExists, columnExists);
     }
 
     @Override
@@ -102,6 +125,8 @@ public class RenameColumn
                 .add("table", table)
                 .add("source", source)
                 .add("target", target)
+                .add("tableExists", tableExists)
+                .add("columnExists", columnExists)
                 .toString();
     }
 }

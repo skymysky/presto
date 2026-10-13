@@ -22,7 +22,6 @@ import com.facebook.presto.accumulo.metadata.ZooKeeperMetadataManager;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
 import org.apache.accumulo.core.client.Connector;
 import org.testng.annotations.Test;
@@ -31,7 +30,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static org.testng.Assert.assertNotNull;
 
 public class TestAccumuloClient
@@ -46,25 +46,24 @@ public class TestAccumuloClient
                 .setUsername("root")
                 .setPassword("secret");
 
-        Connector connector = AccumuloQueryRunner.getAccumuloConnector();
+        Connector connector = TestingAccumuloServer.getInstance().getConnector();
         config.setZooKeepers(connector.getInstance().getZooKeepers());
-        zooKeeperMetadataManager = new ZooKeeperMetadataManager(config, new TypeRegistry());
+        zooKeeperMetadataManager = new ZooKeeperMetadataManager(config, createTestFunctionAndTypeManager());
         client = new AccumuloClient(connector, config, zooKeeperMetadataManager, new AccumuloTableManager(connector), new IndexLookup(connector, new ColumnCardinalityCache(connector, config)));
     }
 
     @Test
     public void testCreateTableEmptyAccumuloColumn()
-            throws Exception
     {
         SchemaTableName tableName = new SchemaTableName("default", "test_create_table_empty_accumulo_column");
 
         try {
             List<ColumnMetadata> columns = ImmutableList.of(
-                    new ColumnMetadata("id", BIGINT),
-                    new ColumnMetadata("a", BIGINT),
-                    new ColumnMetadata("b", BIGINT),
-                    new ColumnMetadata("c", BIGINT),
-                    new ColumnMetadata("d", BIGINT));
+                    ColumnMetadata.builder().setName("id").setType(BIGINT).build(),
+                    ColumnMetadata.builder().setName("a").setType(BIGINT).build(),
+                    ColumnMetadata.builder().setName("b").setType(BIGINT).build(),
+                    ColumnMetadata.builder().setName("c").setType(BIGINT).build(),
+                    ColumnMetadata.builder().setName("d").setType(BIGINT).build());
 
             Map<String, Object> properties = new HashMap<>();
             new AccumuloTableProperties().getTableProperties().forEach(meta -> properties.put(meta.getName(), meta.getDefaultValue()));

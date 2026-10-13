@@ -65,10 +65,9 @@ and exception handling:
     // A plugin is not required to use Guice; it is just very convenient
     Bootstrap app = new Bootstrap(
             new JsonModule(),
-            new ExampleModule(connectorId));
+            new ExampleModule(catalogName));
 
     Injector injector = app
-            .strictConfig()
             .doNotInitializeLogging()
             .setRequiredConfigurationProperties(requiredConfig)
             .initialize();
@@ -107,6 +106,6 @@ Record Set Provider: ExampleRecordSetProvider
 
 The record set provider creates a record set which in turn creates a
 record cursor that returns the actual data to Presto.
-``ExampleRecordCursor`` reads data from a URI via HTTP. Each line
+``ExampleRecordCursor`` reads data from a URI by using HTTP. Each line
 corresponds to a single row. Lines are split on comma into individual
 field values which are then returned to Presto.

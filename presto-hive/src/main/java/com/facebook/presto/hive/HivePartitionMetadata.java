@@ -14,9 +14,10 @@
 package com.facebook.presto.hive;
 
 import com.facebook.presto.hive.metastore.Partition;
+import com.facebook.presto.spi.ColumnHandle;
 
-import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static java.util.Objects.requireNonNull;
 
@@ -24,13 +25,26 @@ public class HivePartitionMetadata
 {
     private final Optional<Partition> partition;
     private final HivePartition hivePartition;
-    private final Map<Integer, HiveTypeName> columnCoercions;
+    private final TableToPartitionMapping tableToPartitionMapping;
+    private final Optional<EncryptionInformation> encryptionInformation;
+    // This is a set of columns whose domain could be removed from table layout because all values in the partition will satisfy.
+    private final Set<ColumnHandle> redundantColumnDomains;
+    private final Optional<byte[]> rowIdPartitionComponent;
 
-    HivePartitionMetadata(HivePartition hivePartition, Optional<Partition> partition, Map<Integer, HiveTypeName> columnCoercions)
+    HivePartitionMetadata(
+            HivePartition hivePartition,
+            Optional<Partition> partition,
+            TableToPartitionMapping tableToPartitionMapping,
+            Optional<EncryptionInformation> encryptionInformation,
+            Set<ColumnHandle> redundantColumnDomains,
+            Optional<byte[]> rowIdPartitionComponent)
     {
         this.partition = requireNonNull(partition, "partition is null");
         this.hivePartition = requireNonNull(hivePartition, "hivePartition is null");
-        this.columnCoercions = requireNonNull(columnCoercions, "columnCoercions is null");
+        this.tableToPartitionMapping = requireNonNull(tableToPartitionMapping, "tableToPartitionMapping is null");
+        this.encryptionInformation = requireNonNull(encryptionInformation, "encryptionInformation is null");
+        this.redundantColumnDomains = requireNonNull(redundantColumnDomains, "redundantColumnDomains is null");
+        this.rowIdPartitionComponent = requireNonNull(rowIdPartitionComponent, "rowIdPartitionComponent is null");
     }
 
     public HivePartition getHivePartition()
@@ -46,8 +60,23 @@ public class HivePartitionMetadata
         return partition;
     }
 
-    public Map<Integer, HiveTypeName> getColumnCoercions()
+    public TableToPartitionMapping getTableToPartitionMapping()
     {
-        return columnCoercions;
+        return tableToPartitionMapping;
+    }
+
+    public Optional<EncryptionInformation> getEncryptionInformation()
+    {
+        return encryptionInformation;
+    }
+
+    public Set<ColumnHandle> getRedundantColumnDomains()
+    {
+        return redundantColumnDomains;
+    }
+
+    public Optional<byte[]> getRowIdPartitionComponent()
+    {
+        return this.rowIdPartitionComponent;
     }
 }

@@ -14,10 +14,12 @@
 package com.facebook.presto.accumulo;
 
 import com.facebook.presto.testing.MaterializedResult;
+import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.AbstractTestDistributedQueries;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.intellij.lang.annotations.Language;
+import org.testng.annotations.Optional;
 import org.testng.annotations.Test;
 
 import static com.facebook.presto.accumulo.AccumuloQueryRunner.createAccumuloQueryRunner;
@@ -32,15 +34,23 @@ import static org.testng.Assert.assertTrue;
  * For the lineitem and partsupp tables, there is no unique identifier,
  * so a generated UUID is used in order to prevent overwriting rows of data.
  * This is the same for any test cases that were creating tables with duplicate rows,
- * so some test cases are overriden from the base class and slightly modified to add an additional UUID column.
+ * so some test cases are overridden from the base class and slightly modified to add an additional UUID column.
  */
+@Test(singleThreaded = true)
 public class TestAccumuloDistributedQueries
         extends AbstractTestDistributedQueries
 {
-    public TestAccumuloDistributedQueries()
+    @Override
+    protected QueryRunner createQueryRunner()
             throws Exception
     {
-        super(() -> createAccumuloQueryRunner(ImmutableMap.of()));
+        return createAccumuloQueryRunner(ImmutableMap.of());
+    }
+
+    @Override
+    protected boolean supportsNotNullColumns()
+    {
+        return false;
     }
 
     @Override
@@ -61,11 +71,13 @@ public class TestAccumuloDistributedQueries
         // This test is overridden due to Function "UUID" not found errors
         // Some test cases from the base class are removed
 
+        // TODO some test cases from overridden method succeed to create table, but with wrong number or rows.
+
         assertUpdate("CREATE TABLE test_create_table_as_if_not_exists (a bigint, b double)");
         assertTrue(getQueryRunner().tableExists(getSession(), "test_create_table_as_if_not_exists"));
         assertTableColumnNames("test_create_table_as_if_not_exists", "a", "b");
 
-        assertUpdate("CREATE TABLE IF NOT EXISTS test_create_table_as_if_not_exists AS SELECT UUID() AS uuid, orderkey, discount FROM lineitem", 0);
+        assertUpdate("CREATE TABLE IF NOT EXISTS test_create_table_as_if_not_exists AS SELECT cast(uuid() AS uuid) AS uuid, orderkey, discount FROM lineitem", 0);
         assertTrue(getQueryRunner().tableExists(getSession(), "test_create_table_as_if_not_exists"));
         assertTableColumnNames("test_create_table_as_if_not_exists", "a", "b");
 
@@ -90,6 +102,13 @@ public class TestAccumuloDistributedQueries
                 "SELECT 0");
     }
 
+    @Test
+    @Override
+    public void testSubfieldAccessControl()
+    {
+        // disabled as accumulo doesn't support complex types
+    }
+
     @Override
     public void testDelete()
     {
@@ -97,9 +116,21 @@ public class TestAccumuloDistributedQueries
     }
 
     @Override
+    public void testUpdate()
+    {
+        // Updates are not supported by the connector
+    }
+
+    @Override
+    public void testNonAutoCommitTransactionWithRollback()
+    {
+        // This connector do not support rollback for insert actions
+    }
+
+    @Override
     public void testInsert()
     {
-        @Language("SQL") String query = "SELECT UUID() AS uuid, orderdate, orderkey FROM orders";
+        @Language("SQL") String query = "SELECT cast(uuid() AS varchar) AS uuid, orderdate, orderkey FROM orders";
 
         assertUpdate("CREATE TABLE test_insert AS " + query + " WITH NO DATA", 0);
         assertQuery("SELECT count(*) FROM test_insert", "SELECT 0");
@@ -124,9 +155,9 @@ public class TestAccumuloDistributedQueries
         // of how they are declared in the table schema
         assertUpdate(
                 "INSERT INTO test_insert (uuid, orderkey, orderdate) " +
-                        "SELECT UUID() AS uuid, orderkey, orderdate FROM orders " +
+                        "SELECT cast(uuid() AS varchar) AS uuid, orderkey, orderdate FROM orders " +
                         "UNION ALL " +
-                        "SELECT UUID() AS uuid, orderkey, orderdate FROM orders",
+                        "SELECT cast(uuid() AS varchar) AS uuid, orderkey, orderdate FROM orders",
                 "SELECT 2 * count(*) FROM orders");
 
         assertUpdate("DROP TABLE test_insert");
@@ -150,7 +181,6 @@ public class TestAccumuloDistributedQueries
         }
     }
 
-    @Override
     public void testBuildFilteredLeftJoin()
     {
         // Override because of extra UUID column in lineitem table, cannot SELECT *
@@ -161,7 +191,6 @@ public class TestAccumuloDistributedQueries
                 + "FROM lineitem LEFT JOIN (SELECT * FROM orders WHERE orderkey % 2 = 0) a ON lineitem.orderkey = a.orderkey");
     }
 
-    @Override
     @Test
     public void testJoinWithAlias()
     {
@@ -169,7 +198,12 @@ public class TestAccumuloDistributedQueries
         // Cannot munge test to pass due to aliased data set 'x' containing duplicate orderkey and comment columns
     }
 
-    @Override
+    @Test
+    public void testShardedJoinOptimization()
+    {
+        // Override because of extra UUID column in lineitem table, cannot SELECT *
+    }
+
     public void testProbeFilteredLeftJoin()
     {
         // Override because of extra UUID column in lineitem table, cannot SELECT *
@@ -180,15 +214,6 @@ public class TestAccumuloDistributedQueries
                 + "FROM (SELECT * FROM lineitem WHERE orderkey % 2 = 0) a LEFT JOIN orders ON a.orderkey = orders.orderkey");
     }
 
-    @Override
-    @Test
-    public void testJoinWithDuplicateRelations()
-    {
-        // Override because of extra UUID column in lineitem table, cannot SELECT *
-        // Cannot munge test to pass due to aliased data sets 'x' containing duplicate orderkey and comment columns
-    }
-
-    @Override
     public void testLeftJoinWithEmptyInnerTable()
     {
         // Override because of extra UUID column in lineitem table, cannot SELECT *
@@ -306,7 +331,7 @@ public class TestAccumuloDistributedQueries
     }
 
     @Override
-    public void testShowColumns()
+    public void testShowColumns(@Optional("PARQUET") String storageFormat)
     {
         // Override base class because table descriptions for Accumulo connector include comments
         MaterializedResult actual = computeActual("SHOW COLUMNS FROM orders");
@@ -378,5 +403,23 @@ public class TestAccumuloDistributedQueries
     public void testDescribeOutputNamedAndUnnamed()
     {
         // this connector uses a non-canonical type for varchar columns in tpch
+    }
+
+    @Override
+    @Test(enabled = false)
+    public void testStringFilters()
+    {
+        // Type not supported for Accumulo: CHAR(10).
+        // VARCHAR(10) fails and this test is disabled for now. See https://github.com/prestodb/presto/issues/19288
+        assertUpdate("CREATE TABLE test_varcharn_filter (shipmode VARCHAR(10))");
+        assertTrue(getQueryRunner().tableExists(getSession(), "test_varcharn_filter"));
+        assertTableColumnNames("test_varcharn_filter", "shipmode");
+        assertUpdate("INSERT INTO test_varcharn_filter SELECT shipmode FROM lineitem", 60175);
+
+        assertQuery("SELECT count(*) FROM test_varcharn_filter WHERE shipmode = 'AIR'", "VALUES (8491)");
+        assertQuery("SELECT count(*) FROM test_varcharn_filter WHERE shipmode = 'AIR    '", "VALUES (0)");
+        assertQuery("SELECT count(*) FROM test_varcharn_filter WHERE shipmode = 'AIR       '", "VALUES (0)");
+        assertQuery("SELECT count(*) FROM test_varcharn_filter WHERE shipmode = 'AIR            '", "VALUES (0)");
+        assertQuery("SELECT count(*) FROM test_varcharn_filter WHERE shipmode = 'NONEXIST'", "VALUES (0)");
     }
 }

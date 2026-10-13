@@ -32,9 +32,15 @@ import io.airlift.slice.SliceOutput;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
+import java.util.TimeZone;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.Math.toIntExact;
 import static java.util.stream.Collectors.toList;
 
@@ -42,6 +48,8 @@ public class OrcMetadataWriter
         implements MetadataWriter
 {
     // see https://github.com/prestodb/orc-protobuf/blob/master/src/main/protobuf/orc_proto.proto
+    private static final int PRESTO_WRITER_ID = 2;
+    // in order to change this value, the master Apache ORC proto file must be updated
     private static final int ORC_WRITER_VERSION = 6;
     private static final List<Integer> ORC_METADATA_VERSION = ImmutableList.of(0, 12);
 
@@ -52,7 +60,12 @@ public class OrcMetadataWriter
     }
 
     @Override
-    public int writePostscript(SliceOutput output, int footerLength, int metadataLength, CompressionKind compression, int compressionBlockSize)
+    public int writePostscript(SliceOutput output,
+            int footerLength,
+            int metadataLength,
+            CompressionKind compression,
+            int compressionBlockSize,
+            Optional<DwrfStripeCacheData> dwrfStripeCacheData)
             throws IOException
     {
         OrcProto.PostScript postScriptProtobuf = OrcProto.PostScript.newBuilder()
@@ -65,6 +78,12 @@ public class OrcMetadataWriter
                 .build();
 
         return writeProtobufObject(output, postScriptProtobuf);
+    }
+
+    @Override
+    public int writeDwrfStripeCache(SliceOutput output, Optional<DwrfStripeCacheData> dwrfStripeCacheData)
+    {
+        return 0;
     }
 
     @Override
@@ -94,6 +113,7 @@ public class OrcMetadataWriter
             throws IOException
     {
         OrcProto.Footer footerProtobuf = OrcProto.Footer.newBuilder()
+                .setWriter(PRESTO_WRITER_ID)
                 .setNumberOfRows(footer.getNumberOfRows())
                 .setRowIndexStride(footer.getRowsInRowGroup())
                 .addAllStripes(footer.getStripes().stream()
@@ -129,7 +149,8 @@ public class OrcMetadataWriter
         Builder builder = Type.newBuilder()
                 .setKind(toTypeKind(type.getOrcTypeKind()))
                 .addAllSubtypes(type.getFieldTypeIndexes())
-                .addAllFieldNames(type.getFieldNames());
+                .addAllFieldNames(type.getFieldNames())
+                .addAllAttributes(toStringPairList(type.getAttributes()));
 
         if (type.getLength().isPresent()) {
             builder.setMaximumLength(type.getLength().get());
@@ -173,6 +194,7 @@ public class OrcMetadataWriter
             case DATE:
                 return OrcProto.Type.Kind.DATE;
             case TIMESTAMP:
+            case TIMESTAMP_MICROSECONDS:
                 return OrcProto.Type.Kind.TIMESTAMP;
             case LIST:
                 return OrcProto.Type.Kind.LIST;
@@ -184,6 +206,16 @@ public class OrcMetadataWriter
                 return OrcProto.Type.Kind.UNION;
         }
         throw new IllegalArgumentException("Unsupported type: " + orcTypeKind);
+    }
+
+    private static List<OrcProto.StringPair> toStringPairList(Map<String, String> attributes)
+    {
+        return attributes.entrySet().stream()
+                .map(entry -> OrcProto.StringPair.newBuilder()
+                        .setKey(entry.getKey())
+                        .setValue(entry.getValue())
+                        .build())
+                .collect(toImmutableList());
     }
 
     private static OrcProto.ColumnStatistics toColumnStatistics(ColumnStatistics columnStatistics)
@@ -201,10 +233,13 @@ public class OrcMetadataWriter
         }
 
         if (columnStatistics.getIntegerStatistics() != null) {
-            builder.setIntStatistics(OrcProto.IntegerStatistics.newBuilder()
+            OrcProto.IntegerStatistics.Builder integerStatistics = OrcProto.IntegerStatistics.newBuilder()
                     .setMinimum(columnStatistics.getIntegerStatistics().getMin())
-                    .setMaximum(columnStatistics.getIntegerStatistics().getMax())
-                    .build());
+                    .setMaximum(columnStatistics.getIntegerStatistics().getMax());
+            if (columnStatistics.getIntegerStatistics().getSum() != null) {
+                integerStatistics.setSum(columnStatistics.getIntegerStatistics().getSum());
+            }
+            builder.setIntStatistics(integerStatistics.build());
         }
 
         if (columnStatistics.getDoubleStatistics() != null) {
@@ -215,10 +250,15 @@ public class OrcMetadataWriter
         }
 
         if (columnStatistics.getStringStatistics() != null) {
-            builder.setStringStatistics(OrcProto.StringStatistics.newBuilder()
-                    .setMinimumBytes(ByteString.copyFrom(columnStatistics.getStringStatistics().getMin().getBytes()))
-                    .setMaximumBytes(ByteString.copyFrom(columnStatistics.getStringStatistics().getMax().getBytes()))
-                    .build());
+            OrcProto.StringStatistics.Builder statisticsBuilder = OrcProto.StringStatistics.newBuilder();
+            if (columnStatistics.getStringStatistics().getMin() != null) {
+                statisticsBuilder.setMinimumBytes(ByteString.copyFrom(columnStatistics.getStringStatistics().getMin().getBytes()));
+            }
+            if (columnStatistics.getStringStatistics().getMax() != null) {
+                statisticsBuilder.setMaximumBytes(ByteString.copyFrom(columnStatistics.getStringStatistics().getMax().getBytes()));
+            }
+            statisticsBuilder.setSum(columnStatistics.getStringStatistics().getSum());
+            builder.setStringStatistics(statisticsBuilder.build());
         }
 
         if (columnStatistics.getDateStatistics() != null) {
@@ -232,6 +272,12 @@ public class OrcMetadataWriter
             builder.setDecimalStatistics(OrcProto.DecimalStatistics.newBuilder()
                     .setMinimum(columnStatistics.getDecimalStatistics().getMin().toString())
                     .setMaximum(columnStatistics.getDecimalStatistics().getMax().toString())
+                    .build());
+        }
+
+        if (columnStatistics.getBinaryStatistics() != null) {
+            builder.setBinaryStatistics(OrcProto.BinaryStatistics.newBuilder()
+                    .setSum(columnStatistics.getBinaryStatistics().getSum())
                     .build());
         }
 
@@ -250,13 +296,17 @@ public class OrcMetadataWriter
     public int writeStripeFooter(SliceOutput output, StripeFooter footer)
             throws IOException
     {
+        ZoneId timezone = footer.getTimezone().orElseThrow(() -> new IllegalArgumentException("Timezone not set"));
+
         OrcProto.StripeFooter footerProtobuf = OrcProto.StripeFooter.newBuilder()
                 .addAllStreams(footer.getStreams().stream()
                         .map(OrcMetadataWriter::toStream)
                         .collect(toList()))
-                .addAllColumns(footer.getColumnEncodings().stream()
-                        .map(OrcMetadataWriter::toColumnEncoding)
+                .addAllColumns(footer.getColumnEncodings().entrySet().stream()
+                        .sorted(Entry.comparingByKey())
+                        .map(entry -> toColumnEncoding(entry.getValue()))
                         .collect(toList()))
+                .setWriterTimezone(TimeZone.getTimeZone(timezone).getID())
                 .build();
 
         return writeProtobufObject(output, footerProtobuf);
@@ -294,6 +344,10 @@ public class OrcMetadataWriter
 
     private static OrcProto.ColumnEncoding toColumnEncoding(ColumnEncoding columnEncodings)
     {
+        checkArgument(
+                !columnEncodings.getAdditionalSequenceEncodings().isPresent(),
+                "Writing columns with non-zero sequence IDs is not supported in ORC: " + columnEncodings);
+
         return OrcProto.ColumnEncoding.newBuilder()
                 .setKind(toColumnEncoding(columnEncodings.getColumnEncodingKind()))
                 .setDictionarySize(columnEncodings.getDictionarySize())
@@ -327,20 +381,13 @@ public class OrcMetadataWriter
         return writeProtobufObject(output, rowIndexProtobuf);
     }
 
-    @Override
-    public MetadataReader getMetadataReader()
-    {
-        return new OrcMetadataReader();
-    }
-
     private static RowIndexEntry toRowGroupIndex(RowGroupIndex rowGroupIndex)
     {
-        return OrcProto.RowIndexEntry.newBuilder()
-                .addAllPositions(rowGroupIndex.getPositions().stream()
-                        .map(Integer::longValue)
-                        .collect(toList()))
-                .setStatistics(toColumnStatistics(rowGroupIndex.getColumnStatistics()))
-                .build();
+        OrcProto.RowIndexEntry.Builder builder = OrcProto.RowIndexEntry.newBuilder();
+        for (int position : rowGroupIndex.getPositions()) {
+            builder.addPositions(position);
+        }
+        return builder.setStatistics(toColumnStatistics(rowGroupIndex.getColumnStatistics())).build();
     }
 
     private static OrcProto.CompressionKind toCompression(CompressionKind compressionKind)
@@ -352,6 +399,10 @@ public class OrcMetadataWriter
                 return OrcProto.CompressionKind.ZLIB;
             case SNAPPY:
                 return OrcProto.CompressionKind.SNAPPY;
+            case LZ4:
+                return OrcProto.CompressionKind.LZ4;
+            case ZSTD:
+                return OrcProto.CompressionKind.ZSTD;
         }
         throw new IllegalArgumentException("Unsupported compression kind: " + compressionKind);
     }

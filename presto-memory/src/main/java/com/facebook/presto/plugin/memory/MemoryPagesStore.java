@@ -13,14 +13,13 @@
  */
 package com.facebook.presto.plugin.memory;
 
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
 import com.google.common.collect.ImmutableList;
-
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import jakarta.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -40,7 +39,7 @@ public class MemoryPagesStore
     private final long maxBytes;
 
     @GuardedBy("this")
-    private long currentBytes = 0;
+    private long currentBytes;
 
     private final Map<Long, TableData> tables = new HashMap<>();
 
@@ -62,6 +61,8 @@ public class MemoryPagesStore
         if (!contains(tableId)) {
             throw new PrestoException(MISSING_DATA, "Failed to find table on a worker.");
         }
+
+        page.compact();
 
         long newSize = currentBytes + page.getRetainedSizeInBytes();
         if (maxBytes < newSize) {
@@ -103,6 +104,17 @@ public class MemoryPagesStore
         return tables.containsKey(tableId);
     }
 
+    public synchronized void clearTable(Long tableId)
+    {
+        TableData tableData = tables.get(tableId);
+        if (tableData != null) {
+            for (Page page : tableData.getPages()) {
+                currentBytes -= page.getRetainedSizeInBytes();
+            }
+            tables.put(tableId, new TableData());
+        }
+    }
+
     public synchronized void cleanUp(Set<Long> activeTableIds)
     {
         // We have to remember that there might be some race conditions when there are two tables created at once.
@@ -133,11 +145,10 @@ public class MemoryPagesStore
 
     private static Page getColumns(Page page, List<Integer> columnIndexes)
     {
-        Block[] blocks = page.getBlocks();
         Block[] outputBlocks = new Block[columnIndexes.size()];
 
         for (int i = 0; i < columnIndexes.size(); i++) {
-            outputBlocks[i] = blocks[columnIndexes.get(i)];
+            outputBlocks[i] = page.getBlock(columnIndexes.get(i));
         }
 
         return new Page(page.getPositionCount(), outputBlocks);
@@ -145,7 +156,7 @@ public class MemoryPagesStore
 
     private static final class TableData
     {
-        private List<Page> pages = new ArrayList<>();
+        private final List<Page> pages = new ArrayList<>();
         private long rows;
 
         public void add(Page page)

@@ -8,6 +8,7 @@ Functions and Operators
     functions/logical
     functions/comparison
     functions/conditional
+    functions/lambda
     functions/conversion
     functions/math
     functions/bitwise
@@ -18,11 +19,24 @@ Functions and Operators
     functions/json
     functions/datetime
     functions/aggregate
+    functions/noisy
     functions/window
     functions/array
     functions/map
-    functions/lambda
     functions/url
+    functions/ip
     functions/geospatial
+    functions/hyperloglog
+    functions/khyperloglog
+    functions/qdigest
+    functions/uuid
+    functions/tdigest
     functions/color
+    functions/session
     functions/teradata
+    functions/internationalization
+    functions/setdigest
+    functions/sketch
+    functions/pinot
+    functions/plugin-loaded-functions
+    functions/table

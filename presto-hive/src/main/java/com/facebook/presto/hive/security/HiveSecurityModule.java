@@ -13,13 +13,14 @@
  */
 package com.facebook.presto.hive.security;
 
+import com.facebook.airlift.configuration.AbstractConfigurationAwareModule;
+import com.facebook.presto.hive.security.ranger.RangerBasedAccessControlModule;
 import com.facebook.presto.plugin.base.security.FileBasedAccessControlModule;
 import com.facebook.presto.plugin.base.security.ReadOnlySecurityModule;
 import com.google.inject.Binder;
 import com.google.inject.Module;
-import io.airlift.configuration.AbstractConfigurationAwareModule;
 
-import static io.airlift.configuration.ConditionalModule.installModuleIf;
+import static com.facebook.airlift.configuration.ConditionalModule.installModuleIf;
 
 public class HiveSecurityModule
         extends AbstractConfigurationAwareModule
@@ -31,6 +32,7 @@ public class HiveSecurityModule
         bindSecurityModule("file", new FileBasedAccessControlModule());
         bindSecurityModule("read-only", new ReadOnlySecurityModule());
         bindSecurityModule("sql-standard", new SqlStandardSecurityModule());
+        bindSecurityModule("ranger", new RangerBasedAccessControlModule());
     }
 
     private void bindSecurityModule(String name, Module module)

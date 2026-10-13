@@ -15,8 +15,7 @@ package com.facebook.presto.hive;
 
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -25,24 +24,24 @@ import static com.google.common.base.Preconditions.checkState;
 
 public class HiveTransactionManager
 {
-    private final ConcurrentMap<ConnectorTransactionHandle, ConnectorMetadata> transactions = new ConcurrentHashMap<>();
+    private final ConcurrentMap<ConnectorTransactionHandle, TransactionalMetadata> transactions = new ConcurrentHashMap<>();
 
     @Inject
     public HiveTransactionManager()
     {
     }
 
-    public ConnectorMetadata get(ConnectorTransactionHandle transactionHandle)
+    public TransactionalMetadata get(ConnectorTransactionHandle transactionHandle)
     {
         return transactions.get(transactionHandle);
     }
 
-    public ConnectorMetadata remove(ConnectorTransactionHandle transactionHandle)
+    public TransactionalMetadata remove(ConnectorTransactionHandle transactionHandle)
     {
         return transactions.remove(transactionHandle);
     }
 
-    public void put(ConnectorTransactionHandle transactionHandle, ConnectorMetadata metadata)
+    public void put(ConnectorTransactionHandle transactionHandle, TransactionalMetadata metadata)
     {
         ConnectorMetadata previousValue = transactions.putIfAbsent(transactionHandle, metadata);
         checkState(previousValue == null);

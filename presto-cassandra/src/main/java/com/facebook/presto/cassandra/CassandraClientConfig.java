@@ -13,46 +13,55 @@
  */
 package com.facebook.presto.cassandra;
 
-import com.datastax.driver.core.ConsistencyLevel;
-import com.datastax.driver.core.SocketOptions;
+import com.datastax.oss.driver.api.core.DefaultConsistencyLevel;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.configuration.ConfigSecuritySensitive;
+import com.facebook.airlift.configuration.DefunctConfig;
+import com.facebook.airlift.units.Duration;
+import com.facebook.airlift.units.MaxDuration;
+import com.facebook.airlift.units.MinDuration;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
-import io.airlift.configuration.Config;
-import io.airlift.configuration.ConfigDescription;
-import io.airlift.configuration.ConfigSecuritySensitive;
-import io.airlift.configuration.DefunctConfig;
-import io.airlift.units.Duration;
-import io.airlift.units.MaxDuration;
-import io.airlift.units.MinDuration;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
-import javax.validation.constraints.Size;
-
+import java.io.File;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 
-@DefunctConfig({"cassandra.thrift-port", "cassandra.partitioner", "cassandra.thrift-connection-factory-class", "cassandra.transport-factory-options",
-        "cassandra.no-host-available-retry-count", "cassandra.max-schema-refresh-threads", "cassandra.schema-cache-ttl",
-        "cassandra.schema-refresh-interval"})
+@DefunctConfig({
+        "cassandra.thrift-port",
+        "cassandra.partitioner",
+        "cassandra.thrift-connection-factory-class",
+        "cassandra.transport-factory-options",
+        "cassandra.no-host-available-retry-count",
+        "cassandra.max-schema-refresh-threads",
+        "cassandra.schema-cache-ttl",
+        "cassandra.schema-refresh-interval",
+        "cassandra.load-policy.use-white-list",
+        "cassandra.load-policy.white-list.addresses"})
 public class CassandraClientConfig
 {
     private static final Splitter SPLITTER = Splitter.on(',').trimResults().omitEmptyStrings();
 
-    private ConsistencyLevel consistencyLevel = ConsistencyLevel.ONE;
+    private DefaultConsistencyLevel consistencyLevel = DefaultConsistencyLevel.LOCAL_ONE;
     private int fetchSize = 5_000;
     private List<String> contactPoints = ImmutableList.of();
     private int nativeProtocolPort = 9042;
     private int partitionSizeForBatchSelect = 100;
     private int splitSize = 1_024;
+    private Long splitsPerNode;
     private boolean allowDropTable;
     private String username;
     private String password;
-    private Duration clientReadTimeout = new Duration(SocketOptions.DEFAULT_READ_TIMEOUT_MILLIS, MILLISECONDS);
-    private Duration clientConnectTimeout = new Duration(SocketOptions.DEFAULT_CONNECT_TIMEOUT_MILLIS, MILLISECONDS);
+    private Duration clientReadTimeout = new Duration(12000, MILLISECONDS);
+    private Duration clientConnectTimeout = new Duration(5000, MILLISECONDS);
     private Integer clientSoLinger;
     private RetryPolicyType retryPolicy = RetryPolicyType.DEFAULT;
     private boolean useDCAware;
@@ -61,11 +70,18 @@ public class CassandraClientConfig
     private boolean dcAwareAllowRemoteDCsForLocal;
     private boolean useTokenAware;
     private boolean tokenAwareShuffleReplicas;
-    private boolean useWhiteList;
-    private List<String> whiteListAddresses = ImmutableList.of();
     private Duration noHostAvailableRetryTimeout = new Duration(1, MINUTES);
     private int speculativeExecutionLimit = 1;
     private Duration speculativeExecutionDelay = new Duration(500, MILLISECONDS);
+    private boolean tlsEnabled;
+    private File truststorePath;
+    private String truststorePassword;
+    private File keystorePath;
+    private String keystorePassword;
+    private File secureConnectBundle;
+    private boolean caseSensitiveNameMatchingEnabled;
+    private String protocolVersion;
+    private int vectorMaxDimensions = 8192;
 
     @NotNull
     @Size(min = 1)
@@ -100,14 +116,29 @@ public class CassandraClientConfig
         return this;
     }
 
+    public Optional<String> getProtocolVersion()
+    {
+        return Optional.ofNullable(protocolVersion);
+    }
+
+    @Config("cassandra.protocol-version")
+    @ConfigDescription("Optionally force the native protocol version (e.g. V3, V4, V5). Normally leave this unset: " +
+            "driver 4.x negotiates the version automatically, including across mixed-version clusters, so forcing it " +
+            "is rarely needed. Provided as an escape hatch.")
+    public CassandraClientConfig setProtocolVersion(String protocolVersion)
+    {
+        this.protocolVersion = protocolVersion;
+        return this;
+    }
+
     @NotNull
-    public ConsistencyLevel getConsistencyLevel()
+    public DefaultConsistencyLevel getConsistencyLevel()
     {
         return consistencyLevel;
     }
 
     @Config("cassandra.consistency-level")
-    public CassandraClientConfig setConsistencyLevel(ConsistencyLevel level)
+    public CassandraClientConfig setConsistencyLevel(DefaultConsistencyLevel level)
     {
         this.consistencyLevel = level;
         return this;
@@ -149,6 +180,18 @@ public class CassandraClientConfig
     public CassandraClientConfig setSplitSize(int splitSize)
     {
         this.splitSize = splitSize;
+        return this;
+    }
+
+    public Optional<Long> getSplitsPerNode()
+    {
+        return Optional.ofNullable(splitsPerNode);
+    }
+
+    @Config("cassandra.splits-per-node")
+    public CassandraClientConfig setSplitsPerNode(Long splitsPerNode)
+    {
+        this.splitsPerNode = splitsPerNode;
         return this;
     }
 
@@ -317,30 +360,6 @@ public class CassandraClientConfig
         return this;
     }
 
-    public boolean isUseWhiteList()
-    {
-        return this.useWhiteList;
-    }
-
-    @Config("cassandra.load-policy.use-white-list")
-    public CassandraClientConfig setUseWhiteList(boolean useWhiteList)
-    {
-        this.useWhiteList = useWhiteList;
-        return this;
-    }
-
-    public List<String> getWhiteListAddresses()
-    {
-        return whiteListAddresses;
-    }
-
-    @Config("cassandra.load-policy.white-list.addresses")
-    public CassandraClientConfig setWhiteListAddresses(String commaSeparatedList)
-    {
-        this.whiteListAddresses = SPLITTER.splitToList(commaSeparatedList);
-        return this;
-    }
-
     @NotNull
     public Duration getNoHostAvailableRetryTimeout()
     {
@@ -377,6 +396,108 @@ public class CassandraClientConfig
     public CassandraClientConfig setSpeculativeExecutionDelay(Duration speculativeExecutionDelay)
     {
         this.speculativeExecutionDelay = speculativeExecutionDelay;
+        return this;
+    }
+
+    public boolean isTlsEnabled()
+    {
+        return tlsEnabled;
+    }
+
+    @Config("cassandra.tls.enabled")
+    public CassandraClientConfig setTlsEnabled(boolean tlsEnabled)
+    {
+        this.tlsEnabled = tlsEnabled;
+        return this;
+    }
+
+    public Optional<File> getKeystorePath()
+    {
+        return Optional.ofNullable(keystorePath);
+    }
+
+    @Config("cassandra.tls.keystore-path")
+    public CassandraClientConfig setKeystorePath(File keystorePath)
+    {
+        this.keystorePath = keystorePath;
+        return this;
+    }
+
+    public Optional<String> getKeystorePassword()
+    {
+        return Optional.ofNullable(keystorePassword);
+    }
+
+    @Config("cassandra.tls.keystore-password")
+    @ConfigSecuritySensitive
+    public CassandraClientConfig setKeystorePassword(String keystorePassword)
+    {
+        this.keystorePassword = keystorePassword;
+        return this;
+    }
+
+    public Optional<File> getTruststorePath()
+    {
+        return Optional.ofNullable(truststorePath);
+    }
+
+    @Config("cassandra.tls.truststore-path")
+    public CassandraClientConfig setTruststorePath(File truststorePath)
+    {
+        this.truststorePath = truststorePath;
+        return this;
+    }
+
+    public Optional<String> getTruststorePassword()
+    {
+        return Optional.ofNullable(truststorePassword);
+    }
+
+    @Config("cassandra.tls.truststore-password")
+    @ConfigSecuritySensitive
+    public CassandraClientConfig setTruststorePassword(String truststorePassword)
+    {
+        this.truststorePassword = truststorePassword;
+        return this;
+    }
+
+    public Optional<File> getSecureConnectBundle()
+    {
+        return Optional.ofNullable(secureConnectBundle);
+    }
+
+    @Config("cassandra.cloud.secure-connect-bundle")
+    @ConfigDescription("Path to secure connect bundle ZIP file for DataStax Astra. " +
+            "When specified, contact-points are ignored.")
+    public CassandraClientConfig setSecureConnectBundle(File secureConnectBundle)
+    {
+        this.secureConnectBundle = secureConnectBundle;
+        return this;
+    }
+
+    public boolean isCaseSensitiveNameMatchingEnabled()
+    {
+        return caseSensitiveNameMatchingEnabled;
+    }
+
+    @Config("case-sensitive-name-matching")
+    public CassandraClientConfig setCaseSensitiveNameMatchingEnabled(boolean caseSensitiveNameMatchingEnabled)
+    {
+        this.caseSensitiveNameMatchingEnabled = caseSensitiveNameMatchingEnabled;
+        return this;
+    }
+
+    @Min(1)
+    public int getVectorMaxDimensions()
+    {
+        return vectorMaxDimensions;
+    }
+
+    @Config("cassandra.vector.max-dimensions")
+    @ConfigDescription("Maximum number of dimensions allowed for a Cassandra vector column (defaults to 8192, Cassandra's maximum)")
+    public CassandraClientConfig setVectorMaxDimensions(int vectorMaxDimensions)
+    {
+        this.vectorMaxDimensions = vectorMaxDimensions;
         return this;
     }
 }

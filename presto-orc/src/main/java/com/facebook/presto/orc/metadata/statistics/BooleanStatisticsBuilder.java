@@ -13,17 +13,31 @@
  */
 package com.facebook.presto.orc.metadata.statistics;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+
 import java.util.List;
 import java.util.Optional;
 
-import static com.facebook.presto.orc.metadata.statistics.BooleanStatistics.BOOLEAN_VALUE_BYTES;
 import static java.util.Objects.requireNonNull;
 
 public class BooleanStatisticsBuilder
         implements StatisticsBuilder
 {
     private long nonNullValueCount;
+    private long storageSize;
+    private long rawSize;
     private long trueValueCount;
+
+    @Override
+    public void addBlock(Type type, Block block)
+    {
+        for (int position = 0; position < block.getPositionCount(); position++) {
+            if (!block.isNull(position)) {
+                addValue(type.getBoolean(block, position));
+            }
+        }
+    }
 
     public void addValue(boolean value)
     {
@@ -53,17 +67,22 @@ public class BooleanStatisticsBuilder
     public ColumnStatistics buildColumnStatistics()
     {
         Optional<BooleanStatistics> booleanStatistics = buildBooleanStatistics();
-        return new ColumnStatistics(
-                nonNullValueCount,
-                booleanStatistics.map(s -> BOOLEAN_VALUE_BYTES).orElse(0L),
-                booleanStatistics.orElse(null),
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null);
+        if (booleanStatistics.isPresent()) {
+            return new BooleanColumnStatistics(nonNullValueCount, null, rawSize, storageSize, booleanStatistics.get());
+        }
+        return new ColumnStatistics(nonNullValueCount, null, rawSize, storageSize);
+    }
+
+    @Override
+    public void incrementRawSize(long rawSize)
+    {
+        this.rawSize += rawSize;
+    }
+
+    @Override
+    public void incrementSize(long storageSize)
+    {
+        this.storageSize += storageSize;
     }
 
     public static Optional<BooleanStatistics> mergeBooleanStatistics(List<ColumnStatistics> stats)

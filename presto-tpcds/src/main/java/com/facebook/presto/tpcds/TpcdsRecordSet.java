@@ -13,32 +13,32 @@
  */
 package com.facebook.presto.tpcds;
 
+import com.facebook.presto.common.type.DecimalParseResult;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.RecordSet;
-import com.facebook.presto.spi.type.DecimalParseResult;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.Decimals;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.teradata.tpcds.Results;
 import com.teradata.tpcds.column.Column;
 import com.teradata.tpcds.column.ColumnType;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
-import org.joda.time.Days;
-import org.joda.time.LocalDate;
-import org.joda.time.LocalTime;
 
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.Iterator;
 import java.util.List;
 
-import static com.facebook.presto.spi.type.Chars.trimTrailingSpaces;
-import static com.facebook.presto.spi.type.Decimals.rescale;
+import static com.facebook.presto.common.type.Chars.trimTrailingSpaces;
+import static com.facebook.presto.common.type.Decimals.rescale;
 import static com.facebook.presto.tpcds.TpcdsMetadata.getPrestoType;
 import static com.google.common.base.Preconditions.checkState;
 import static java.lang.Double.parseDouble;
 import static java.lang.Integer.parseInt;
 import static java.lang.Long.parseLong;
+import static java.time.temporal.ChronoField.MILLI_OF_DAY;
 import static java.util.Objects.requireNonNull;
 
 public class TpcdsRecordSet
@@ -49,7 +49,9 @@ public class TpcdsRecordSet
 
     private final List<Type> columnTypes;
 
-    public TpcdsRecordSet(Results results, List<Column> columns)
+    private final boolean useVarcharType;
+
+    public TpcdsRecordSet(Results results, List<Column> columns, boolean useVarcharType)
     {
         requireNonNull(results, "results is null");
 
@@ -57,9 +59,10 @@ public class TpcdsRecordSet
         this.columns = ImmutableList.copyOf(columns);
         ImmutableList.Builder<Type> columnTypes = ImmutableList.builder();
         for (Column column : columns) {
-            columnTypes.add(getPrestoType(column.getType()));
+            columnTypes.add(getPrestoType(column.getType(), useVarcharType));
         }
         this.columnTypes = columnTypes.build();
+        this.useVarcharType = useVarcharType;
     }
 
     @Override
@@ -103,7 +106,7 @@ public class TpcdsRecordSet
         @Override
         public Type getType(int field)
         {
-            return getPrestoType(columns.get(field).getType());
+            return getPrestoType(columns.get(field).getType(), useVarcharType);
         }
 
         @Override
@@ -131,10 +134,10 @@ public class TpcdsRecordSet
             checkState(row != null, "No current row");
             Column column = columns.get(field);
             if (column.getType().getBase() == ColumnType.Base.DATE) {
-                return Days.daysBetween(new LocalDate(0), LocalDate.parse(row.get(column.getPosition()))).getDays();
+                return LocalDate.parse(row.get(column.getPosition())).toEpochDay();
             }
             if (column.getType().getBase() == ColumnType.Base.TIME) {
-                return LocalTime.parse(row.get(column.getPosition())).getMillisOfDay();
+                return LocalTime.parse(row.get(column.getPosition())).get(MILLI_OF_DAY);
             }
             if (column.getType().getBase() == ColumnType.Base.INTEGER) {
                 return parseInt(row.get(column.getPosition()));

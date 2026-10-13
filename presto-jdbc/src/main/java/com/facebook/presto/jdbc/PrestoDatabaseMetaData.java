@@ -22,16 +22,18 @@ import java.sql.ResultSet;
 import java.sql.RowIdLifetime;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
-import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
+import static com.facebook.presto.common.type.VarcharType.MAX_LENGTH;
 import static java.lang.Integer.parseInt;
+import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 public class PrestoDatabaseMetaData
         implements DatabaseMetaData
 {
+    private static final String JDBC_URL_START = "jdbc:";
     private static final String SEARCH_STRING_ESCAPE = "\\";
 
     private final PrestoConnection connection;
@@ -59,7 +61,7 @@ public class PrestoDatabaseMetaData
     public String getURL()
             throws SQLException
     {
-        return connection.getURI().toString();
+        return JDBC_URL_START + connection.getURI().toString();
     }
 
     @Override
@@ -1142,8 +1144,7 @@ public class PrestoDatabaseMetaData
     public boolean supportsBatchUpdates()
             throws SQLException
     {
-        // TODO: support batch updates
-        return false;
+        return true;
     }
 
     @Override
@@ -1346,8 +1347,16 @@ public class PrestoDatabaseMetaData
     public ResultSet getClientInfoProperties()
             throws SQLException
     {
-        // TODO: implement this
-        throw new NotImplementedException("DatabaseMetaData", "getClientInfoProperties");
+        return select(format("SELECT * FROM (VALUES%n" +
+                        "        ('ApplicationName', %s, 'presto-jdbc', 'Sets the source of the session'),%n" +
+                        "        ('ClientInfo', %s, NULL, 'Sets the client info of the session'),        %n" +
+                        "        ('ClientTags', %s, NULL, 'Comma-delimited string of tags for the session'),        %n" +
+                        "        ('TraceToken', %s, NULL, 'Sets the trace token of the session')        %n" +
+                        ") AS t (NAME, MAX_LEN, DEFAULT_VALUE, DESCRIPTION)",
+                MAX_LENGTH,
+                MAX_LENGTH,
+                MAX_LENGTH,
+                MAX_LENGTH));
     }
 
     @Override
@@ -1412,9 +1421,7 @@ public class PrestoDatabaseMetaData
     private ResultSet select(String sql)
             throws SQLException
     {
-        try (Statement statement = getConnection().createStatement()) {
-            return statement.executeQuery(sql);
-        }
+        return getConnection().createStatement().executeQuery(sql);
     }
 
     private static void buildFilters(StringBuilder out, List<String> filters)

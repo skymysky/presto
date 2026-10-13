@@ -16,7 +16,6 @@ package com.facebook.presto.orc.metadata.statistics;
 import java.util.List;
 import java.util.Optional;
 
-import static com.facebook.presto.orc.metadata.statistics.DateStatistics.DATE_VALUE_BYTES;
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
@@ -24,6 +23,8 @@ public class DateStatisticsBuilder
         implements LongValueStatisticsBuilder
 {
     private long nonNullValueCount;
+    private long storageSize;
+    private long rawSize;
     private int minimum = Integer.MAX_VALUE;
     private int maximum = Integer.MIN_VALUE;
 
@@ -60,17 +61,22 @@ public class DateStatisticsBuilder
     public ColumnStatistics buildColumnStatistics()
     {
         Optional<DateStatistics> dateStatistics = buildDateStatistics();
-        return new ColumnStatistics(
-                nonNullValueCount,
-                dateStatistics.map(s -> DATE_VALUE_BYTES).orElse(0L),
-                null,
-                null,
-                null,
-                null,
-                dateStatistics.orElse(null),
-                null,
-                null,
-                null);
+        if (dateStatistics.isPresent()) {
+            return new DateColumnStatistics(nonNullValueCount, null, rawSize, storageSize, dateStatistics.get());
+        }
+        return new ColumnStatistics(nonNullValueCount, null, rawSize, storageSize);
+    }
+
+    @Override
+    public void incrementRawSize(long rawSize)
+    {
+        this.rawSize += rawSize;
+    }
+
+    @Override
+    public void incrementSize(long storageSize)
+    {
+        this.storageSize += storageSize;
     }
 
     public static Optional<DateStatistics> mergeDateStatistics(List<ColumnStatistics> stats)

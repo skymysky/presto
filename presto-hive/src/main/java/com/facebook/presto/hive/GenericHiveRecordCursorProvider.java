@@ -13,18 +13,18 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.hive.cache.HiveCachingHdfsConfiguration;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.RecordCursor;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.TypeManager;
+import jakarta.inject.Inject;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.RecordReader;
 import org.joda.time.DateTimeZone;
-
-import javax.inject.Inject;
 
 import java.io.IOException;
 import java.util.List;
@@ -47,37 +47,48 @@ public class GenericHiveRecordCursorProvider
 
     @Override
     public Optional<RecordCursor> createRecordCursor(
-            String clientId,
             Configuration configuration,
             ConnectorSession session,
-            Path path,
-            long start,
-            long length,
-            long fileSize,
+            HiveFileSplit fileSplit,
             Properties schema,
             List<HiveColumnHandle> columns,
             TupleDomain<HiveColumnHandle> effectivePredicate,
             DateTimeZone hiveStorageTimeZone,
-            TypeManager typeManager)
+            TypeManager typeManager,
+            boolean s3SelectPushdownEnabled)
     {
         // make sure the FileSystem is created with the proper Configuration object
+        Path path = new Path(fileSplit.getPath());
         try {
+            if (!fileSplit.getCustomSplitInfo().isEmpty()) {
+                if (configuration instanceof HiveCachingHdfsConfiguration.CachingJobConf) {
+                    configuration = ((HiveCachingHdfsConfiguration.CachingJobConf) configuration).getConfig();
+                }
+                if (configuration instanceof CopyOnFirstWriteConfiguration) {
+                    configuration = ((CopyOnFirstWriteConfiguration) configuration).getConfig();
+                }
+            }
             this.hdfsEnvironment.getFileSystem(session.getUser(), path, configuration);
         }
         catch (IOException e) {
             throw new PrestoException(HIVE_FILESYSTEM_ERROR, "Failed getting FileSystem: " + path, e);
         }
 
-        RecordReader<?, ?> recordReader = hdfsEnvironment.doAs(session.getUser(),
-                () -> HiveUtil.createRecordReader(configuration, path, start, length, schema, columns));
+        Configuration actualConfiguration = configuration;
 
-        return Optional.of(new GenericHiveRecordCursor<>(
-                genericRecordReader(recordReader),
-                length,
-                schema,
-                columns,
-                hiveStorageTimeZone,
-                typeManager));
+        RecordReader<?, ?> recordReader = hdfsEnvironment.doAs(session.getUser(),
+                () -> HiveUtil.createRecordReader(actualConfiguration, path, fileSplit.getStart(), fileSplit.getLength(), schema, columns, fileSplit.getCustomSplitInfo()));
+        return hdfsEnvironment.doAs(session.getUser(),
+                () -> Optional.of(new GenericHiveRecordCursor<>(
+                        session,
+                        actualConfiguration,
+                        path,
+                        genericRecordReader(recordReader),
+                        fileSplit.getLength(),
+                        schema,
+                        columns,
+                        hiveStorageTimeZone,
+                        typeManager)));
     }
 
     @SuppressWarnings("unchecked")

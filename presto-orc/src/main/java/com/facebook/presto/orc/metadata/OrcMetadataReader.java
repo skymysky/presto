@@ -13,6 +13,14 @@
  */
 package com.facebook.presto.orc.metadata;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.presto.common.RuntimeStats;
+import com.facebook.presto.common.RuntimeUnit;
+import com.facebook.presto.orc.DwrfEncryptionProvider;
+import com.facebook.presto.orc.DwrfKeyProvider;
+import com.facebook.presto.orc.OrcDataSource;
+import com.facebook.presto.orc.OrcDataSourceId;
+import com.facebook.presto.orc.OrcDecompressor;
 import com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind;
 import com.facebook.presto.orc.metadata.OrcType.OrcTypeKind;
 import com.facebook.presto.orc.metadata.PostScript.HiveWriterVersion;
@@ -34,57 +42,66 @@ import com.facebook.presto.orc.protobuf.CodedInputStream;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
-import io.airlift.log.Logger;
+import com.sun.management.ThreadMXBean;
 import io.airlift.slice.Slice;
-import io.airlift.slice.SliceUtf8;
 import io.airlift.slice.Slices;
-import io.airlift.units.DataSize;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.management.ManagementFactory;
 import java.math.BigDecimal;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
+import java.util.TimeZone;
+import java.util.stream.IntStream;
 
+import static com.facebook.airlift.units.DataSize.Unit.GIGABYTE;
+import static com.facebook.presto.orc.metadata.ColumnEncoding.DEFAULT_SEQUENCE_ID;
+import static com.facebook.presto.orc.metadata.CompressionKind.LZ4;
 import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
 import static com.facebook.presto.orc.metadata.CompressionKind.SNAPPY;
 import static com.facebook.presto.orc.metadata.CompressionKind.ZLIB;
+import static com.facebook.presto.orc.metadata.CompressionKind.ZSTD;
 import static com.facebook.presto.orc.metadata.PostScript.HiveWriterVersion.ORC_HIVE_8732;
 import static com.facebook.presto.orc.metadata.PostScript.HiveWriterVersion.ORIGINAL;
-import static com.facebook.presto.orc.metadata.statistics.BinaryStatistics.BINARY_VALUE_BYTES_OVERHEAD;
-import static com.facebook.presto.orc.metadata.statistics.BooleanStatistics.BOOLEAN_VALUE_BYTES;
-import static com.facebook.presto.orc.metadata.statistics.DateStatistics.DATE_VALUE_BYTES;
-import static com.facebook.presto.orc.metadata.statistics.DecimalStatistics.DECIMAL_VALUE_BYTES_OVERHEAD;
-import static com.facebook.presto.orc.metadata.statistics.DoubleStatistics.DOUBLE_VALUE_BYTES;
-import static com.facebook.presto.orc.metadata.statistics.IntegerStatistics.INTEGER_VALUE_BYTES;
+import static com.facebook.presto.orc.metadata.statistics.ColumnStatistics.createColumnStatistics;
 import static com.facebook.presto.orc.metadata.statistics.ShortDecimalStatisticsBuilder.SHORT_DECIMAL_VALUE_BYTES;
-import static com.facebook.presto.orc.metadata.statistics.StringStatistics.STRING_VALUE_BYTES_OVERHEAD;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Strings.emptyToNull;
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.airlift.slice.SliceUtf8.lengthOfCodePoint;
 import static io.airlift.slice.SliceUtf8.tryGetCodePointAt;
-import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static java.lang.Character.MIN_SUPPLEMENTARY_CODE_POINT;
 import static java.lang.Math.toIntExact;
+import static java.util.Objects.requireNonNull;
 
 public class OrcMetadataReader
         implements MetadataReader
 {
     private static final int REPLACEMENT_CHARACTER_CODE_POINT = 0xFFFD;
-    @VisibleForTesting
-    static final Slice REPLACEMENT_CHARACTER_UTF8 = SliceUtf8.codePointToUtf8(REPLACEMENT_CHARACTER_CODE_POINT);
-    private static final Slice MAX_BYTE = Slices.wrappedBuffer(new byte[] {(byte) 0xFF});
-    private static final Logger log = Logger.get(OrcMetadataReader.class);
-
     private static final int PROTOBUF_MESSAGE_MAX_LIMIT = toIntExact(new DataSize(1, GIGABYTE).toBytes());
+    private static final ThreadMXBean THREAD_MX_BEAN = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+
+    private final RuntimeStats runtimeStats;
+
+    public OrcMetadataReader(RuntimeStats runtimeStats)
+    {
+        this.runtimeStats = requireNonNull(runtimeStats, "runtimeStats is null");
+    }
 
     @Override
     public PostScript readPostScript(byte[] data, int offset, int length)
             throws IOException
     {
+        long cpuStart = THREAD_MX_BEAN.getCurrentThreadCpuTime();
         CodedInputStream input = CodedInputStream.newInstance(data, offset, length);
         OrcProto.PostScript postScript = OrcProto.PostScript.parseFrom(input);
+        runtimeStats.addMetricValue("OrcReadPostScriptTimeNanos", RuntimeUnit.NANO, THREAD_MX_BEAN.getCurrentThreadCpuTime() - cpuStart);
 
         return new PostScript(
                 postScript.getVersionList(),
@@ -92,7 +109,9 @@ public class OrcMetadataReader
                 postScript.getMetadataLength(),
                 toCompression(postScript.getCompression()),
                 postScript.getCompressionBlockSize(),
-                toHiveWriterVersion(postScript.getWriterVersion()));
+                toHiveWriterVersion(postScript.getWriterVersion()),
+                OptionalInt.empty(),
+                Optional.empty());
     }
 
     private static HiveWriterVersion toHiveWriterVersion(int writerVersion)
@@ -107,15 +126,19 @@ public class OrcMetadataReader
     public Metadata readMetadata(HiveWriterVersion hiveWriterVersion, InputStream inputStream)
             throws IOException
     {
+        long cpuStart = THREAD_MX_BEAN.getCurrentThreadCpuTime();
         CodedInputStream input = CodedInputStream.newInstance(inputStream);
         input.setSizeLimit(PROTOBUF_MESSAGE_MAX_LIMIT);
         OrcProto.Metadata metadata = OrcProto.Metadata.parseFrom(input);
+        runtimeStats.addMetricValue("OrcReadMetadataTimeNanos", RuntimeUnit.NANO, THREAD_MX_BEAN.getCurrentThreadCpuTime() - cpuStart);
         return new Metadata(toStripeStatistics(hiveWriterVersion, metadata.getStripeStatsList()));
     }
 
     private static List<StripeStatistics> toStripeStatistics(HiveWriterVersion hiveWriterVersion, List<OrcProto.StripeStatistics> types)
     {
-        return ImmutableList.copyOf(Iterables.transform(types, stripeStatistics -> toStripeStatistics(hiveWriterVersion, stripeStatistics)));
+        return types.stream()
+                .map(stripeStatistics -> toStripeStatistics(hiveWriterVersion, stripeStatistics))
+                .collect(toImmutableList());
     }
 
     private static StripeStatistics toStripeStatistics(HiveWriterVersion hiveWriterVersion, OrcProto.StripeStatistics stripeStatistics)
@@ -124,53 +147,76 @@ public class OrcMetadataReader
     }
 
     @Override
-    public Footer readFooter(HiveWriterVersion hiveWriterVersion, InputStream inputStream)
+    public Footer readFooter(HiveWriterVersion hiveWriterVersion,
+            InputStream inputStream,
+            DwrfEncryptionProvider dwrfEncryptionProvider,
+            DwrfKeyProvider dwrfKeyProvider,
+            OrcDataSource orcDataSource,
+            Optional<OrcDecompressor> decompressor)
             throws IOException
     {
+        long cpuStart = THREAD_MX_BEAN.getCurrentThreadCpuTime();
         CodedInputStream input = CodedInputStream.newInstance(inputStream);
         input.setSizeLimit(PROTOBUF_MESSAGE_MAX_LIMIT);
         OrcProto.Footer footer = OrcProto.Footer.parseFrom(input);
+        runtimeStats.addMetricValue("OrcReadFooterTimeNanos", RuntimeUnit.NANO, THREAD_MX_BEAN.getCurrentThreadCpuTime() - cpuStart);
         return new Footer(
                 footer.getNumberOfRows(),
                 footer.getRowIndexStride(),
+                OptionalLong.empty(),
                 toStripeInformation(footer.getStripesList()),
                 toType(footer.getTypesList()),
                 toColumnStatistics(hiveWriterVersion, footer.getStatisticsList(), false),
-                toUserMetadata(footer.getMetadataList()));
+                toUserMetadata(footer.getMetadataList()),
+                Optional.empty(),
+                Optional.empty());
     }
 
     private static List<StripeInformation> toStripeInformation(List<OrcProto.StripeInformation> types)
     {
-        return ImmutableList.copyOf(Iterables.transform(types, OrcMetadataReader::toStripeInformation));
+        return types.stream()
+                .map(OrcMetadataReader::toStripeInformation)
+                .collect(toImmutableList());
     }
 
     private static StripeInformation toStripeInformation(OrcProto.StripeInformation stripeInformation)
     {
         return new StripeInformation(
-                toIntExact(stripeInformation.getNumberOfRows()),
+                stripeInformation.getNumberOfRows(),
                 stripeInformation.getOffset(),
                 stripeInformation.getIndexLength(),
                 stripeInformation.getDataLength(),
-                stripeInformation.getFooterLength());
+                stripeInformation.getFooterLength(),
+                OptionalLong.empty(),
+                ImmutableList.of());
     }
 
     @Override
-    public StripeFooter readStripeFooter(List<OrcType> types, InputStream inputStream)
+    public StripeFooter readStripeFooter(OrcDataSourceId orcDataSourceId, List<OrcType> types, InputStream inputStream)
             throws IOException
     {
+        long cpuStart = THREAD_MX_BEAN.getCurrentThreadCpuTime();
         CodedInputStream input = CodedInputStream.newInstance(inputStream);
         OrcProto.StripeFooter stripeFooter = OrcProto.StripeFooter.parseFrom(input);
-        return new StripeFooter(toStream(stripeFooter.getStreamsList()), toColumnEncoding(stripeFooter.getColumnsList()));
+        runtimeStats.addMetricValue("OrcReadStripeFooterTimeNanos", RuntimeUnit.NANO, THREAD_MX_BEAN.getCurrentThreadCpuTime() - cpuStart);
+        return new StripeFooter(
+                toStream(stripeFooter.getStreamsList()),
+                toColumnEncoding(stripeFooter.getColumnsList()),
+                ImmutableList.of(),
+                Optional.ofNullable(emptyToNull(stripeFooter.getWriterTimezone()))
+                        .map(timezone -> TimeZone.getTimeZone(ZoneId.of(timezone)).toZoneId()));
     }
 
     private static Stream toStream(OrcProto.Stream stream)
     {
-        return new Stream(stream.getColumn(), toStreamKind(stream.getKind()), toIntExact(stream.getLength()), true);
+        return new Stream(stream.getColumn(), DEFAULT_SEQUENCE_ID, toStreamKind(stream.getKind()), toIntExact(stream.getLength()), true);
     }
 
     private static List<Stream> toStream(List<OrcProto.Stream> streams)
     {
-        return ImmutableList.copyOf(Iterables.transform(streams, OrcMetadataReader::toStream));
+        return streams.stream()
+                .map(OrcMetadataReader::toStream)
+                .collect(toImmutableList());
     }
 
     private static ColumnEncoding toColumnEncoding(OrcProto.ColumnEncoding columnEncoding)
@@ -178,18 +224,24 @@ public class OrcMetadataReader
         return new ColumnEncoding(toColumnEncodingKind(columnEncoding.getKind()), columnEncoding.getDictionarySize());
     }
 
-    private static List<ColumnEncoding> toColumnEncoding(List<OrcProto.ColumnEncoding> columnEncodings)
+    private static Map<Integer, ColumnEncoding> toColumnEncoding(List<OrcProto.ColumnEncoding> columnEncodings)
     {
-        return ImmutableList.copyOf(Iterables.transform(columnEncodings, OrcMetadataReader::toColumnEncoding));
+        return IntStream.range(0, columnEncodings.size())
+                .boxed()
+                .collect(toImmutableMap(index -> index, index -> toColumnEncoding(columnEncodings.get(index))));
     }
 
     @Override
-    public List<RowGroupIndex> readRowIndexes(HiveWriterVersion hiveWriterVersion, InputStream inputStream)
+    public List<RowGroupIndex> readRowIndexes(HiveWriterVersion hiveWriterVersion, InputStream inputStream, List<HiveBloomFilter> bloomFilters)
             throws IOException
     {
+        long cpuStart = THREAD_MX_BEAN.getCurrentThreadCpuTime();
         CodedInputStream input = CodedInputStream.newInstance(inputStream);
         OrcProto.RowIndex rowIndex = OrcProto.RowIndex.parseFrom(input);
-        return ImmutableList.copyOf(Iterables.transform(rowIndex.getEntryList(), rowIndexEntry -> toRowGroupIndex(hiveWriterVersion, rowIndexEntry)));
+        runtimeStats.addMetricValue("OrcReadRowIndexesTimeNanos", RuntimeUnit.NANO, THREAD_MX_BEAN.getCurrentThreadCpuTime() - cpuStart);
+        return IntStream.range(0, rowIndex.getEntryCount())
+                .mapToObj(i -> toRowGroupIndex(hiveWriterVersion, rowIndex.getEntry(i), bloomFilters == null || bloomFilters.isEmpty() ? null : bloomFilters.get(i)))
+                .collect(toImmutableList());
     }
 
     @Override
@@ -206,69 +258,36 @@ public class OrcMetadataReader
         return builder.build();
     }
 
-    private static RowGroupIndex toRowGroupIndex(HiveWriterVersion hiveWriterVersion, RowIndexEntry rowIndexEntry)
+    private static RowGroupIndex toRowGroupIndex(HiveWriterVersion hiveWriterVersion, RowIndexEntry rowIndexEntry, HiveBloomFilter bloomFilter)
     {
         List<Long> positionsList = rowIndexEntry.getPositionsList();
-        ImmutableList.Builder<Integer> positions = ImmutableList.builder();
+        int[] positions = new int[positionsList.size()];
         for (int index = 0; index < positionsList.size(); index++) {
             long longPosition = positionsList.get(index);
             int intPosition = (int) longPosition;
 
             checkState(intPosition == longPosition, "Expected checkpoint position %s, to be an integer", index);
 
-            positions.add(intPosition);
+            positions[index] = intPosition;
         }
-        return new RowGroupIndex(positions.build(), toColumnStatistics(hiveWriterVersion, rowIndexEntry.getStatistics(), true));
+        return new RowGroupIndex(positions, toColumnStatistics(hiveWriterVersion, rowIndexEntry.getStatistics(), true, bloomFilter));
     }
 
-    private static ColumnStatistics toColumnStatistics(HiveWriterVersion hiveWriterVersion, OrcProto.ColumnStatistics statistics, boolean isRowGroup)
+    private static ColumnStatistics toColumnStatistics(HiveWriterVersion hiveWriterVersion, OrcProto.ColumnStatistics statistics, boolean isRowGroup, HiveBloomFilter bloomFilter)
     {
-        long minAverageValueBytes;
-
-        if (statistics.hasBucketStatistics()) {
-            minAverageValueBytes = BOOLEAN_VALUE_BYTES;
-        }
-        else if (statistics.hasIntStatistics()) {
-            minAverageValueBytes = INTEGER_VALUE_BYTES;
-        }
-        else if (statistics.hasDoubleStatistics()) {
-            minAverageValueBytes = DOUBLE_VALUE_BYTES;
-        }
-        else if (statistics.hasStringStatistics()) {
-            minAverageValueBytes = STRING_VALUE_BYTES_OVERHEAD;
-            if (statistics.hasNumberOfValues() && statistics.getNumberOfValues() > 0) {
-                minAverageValueBytes += statistics.getStringStatistics().getSum() / statistics.getNumberOfValues();
-            }
-        }
-        else if (statistics.hasDateStatistics()) {
-            minAverageValueBytes = DATE_VALUE_BYTES;
-        }
-        else if (statistics.hasDecimalStatistics()) {
-            // could be 8 or 16; return the smaller one given it is a min average
-            minAverageValueBytes = DECIMAL_VALUE_BYTES_OVERHEAD + SHORT_DECIMAL_VALUE_BYTES;
-        }
-        else if (statistics.hasBinaryStatistics()) {
-            // offset and value length
-            minAverageValueBytes = BINARY_VALUE_BYTES_OVERHEAD;
-            if (statistics.hasNumberOfValues() && statistics.getNumberOfValues() > 0) {
-                minAverageValueBytes += statistics.getBinaryStatistics().getSum() / statistics.getNumberOfValues();
-            }
-        }
-        else {
-            minAverageValueBytes = 0;
-        }
-
-        return new ColumnStatistics(
+        return createColumnStatistics(
                 statistics.getNumberOfValues(),
-                minAverageValueBytes,
-                toBooleanStatistics(statistics.getBucketStatistics()),
-                toIntegerStatistics(statistics.getIntStatistics()),
-                toDoubleStatistics(statistics.getDoubleStatistics()),
-                toStringStatistics(hiveWriterVersion, statistics.getStringStatistics(), isRowGroup),
-                toDateStatistics(hiveWriterVersion, statistics.getDateStatistics(), isRowGroup),
-                toDecimalStatistics(statistics.getDecimalStatistics()),
-                toBinaryStatistics(statistics.getBinaryStatistics()),
-                null);
+                null,
+                null,
+                statistics.hasBucketStatistics() ? toBooleanStatistics(statistics.getBucketStatistics()) : null,
+                statistics.hasIntStatistics() ? toIntegerStatistics(statistics.getIntStatistics()) : null,
+                statistics.hasDoubleStatistics() ? toDoubleStatistics(statistics.getDoubleStatistics()) : null,
+                statistics.hasStringStatistics() ? toStringStatistics(hiveWriterVersion, statistics.getStringStatistics(), isRowGroup) : null,
+                statistics.hasDateStatistics() ? toDateStatistics(hiveWriterVersion, statistics.getDateStatistics(), isRowGroup) : null,
+                statistics.hasDecimalStatistics() ? toDecimalStatistics(statistics.getDecimalStatistics()) : null,
+                statistics.hasBinaryStatistics() ? toBinaryStatistics(statistics.getBinaryStatistics()) : null,
+                null,
+                bloomFilter);
     }
 
     private static List<ColumnStatistics> toColumnStatistics(HiveWriterVersion hiveWriterVersion, List<OrcProto.ColumnStatistics> columnStatistics, boolean isRowGroup)
@@ -276,10 +295,12 @@ public class OrcMetadataReader
         if (columnStatistics == null) {
             return ImmutableList.of();
         }
-        return ImmutableList.copyOf(Iterables.transform(columnStatistics, statistics -> toColumnStatistics(hiveWriterVersion, statistics, isRowGroup)));
+        return columnStatistics.stream()
+                .map(statistics -> toColumnStatistics(hiveWriterVersion, statistics, isRowGroup, null))
+                .collect(toImmutableList());
     }
 
-    private Map<String, Slice> toUserMetadata(List<OrcProto.UserMetadataItem> metadataList)
+    private static Map<String, Slice> toUserMetadata(List<OrcProto.UserMetadataItem> metadataList)
     {
         ImmutableMap.Builder<String, Slice> mapBuilder = ImmutableMap.builder();
         for (OrcProto.UserMetadataItem item : metadataList) {
@@ -299,21 +320,14 @@ public class OrcMetadataReader
 
     private static IntegerStatistics toIntegerStatistics(OrcProto.IntegerStatistics integerStatistics)
     {
-        if (!integerStatistics.hasMinimum() && !integerStatistics.hasMaximum()) {
-            return null;
-        }
-
         return new IntegerStatistics(
                 integerStatistics.hasMinimum() ? integerStatistics.getMinimum() : null,
-                integerStatistics.hasMaximum() ? integerStatistics.getMaximum() : null);
+                integerStatistics.hasMaximum() ? integerStatistics.getMaximum() : null,
+                integerStatistics.hasSum() ? integerStatistics.getSum() : null);
     }
 
     private static DoubleStatistics toDoubleStatistics(OrcProto.DoubleStatistics doubleStatistics)
     {
-        if (!doubleStatistics.hasMinimum() && !doubleStatistics.hasMaximum()) {
-            return null;
-        }
-
         // TODO remove this when double statistics are changed to correctly deal with NaNs
         // if either min, max, or sum is NaN, ignore the stat
         if ((doubleStatistics.hasMinimum() && Double.isNaN(doubleStatistics.getMinimum())) ||
@@ -333,26 +347,25 @@ public class OrcMetadataReader
             return null;
         }
 
-        if (!stringStatistics.hasMinimum() && !stringStatistics.hasMaximum()) {
-            return null;
-        }
-
-        Slice maximum = stringStatistics.hasMaximum() ? maxStringTruncateToValidRange(byteStringToSlice(stringStatistics.getMaximumBytes()), hiveWriterVersion) : null;
-        Slice minimum = stringStatistics.hasMinimum() ? minStringTruncateToValidRange(byteStringToSlice(stringStatistics.getMinimumBytes()), hiveWriterVersion) : null;
+        Slice maximum = stringStatistics.hasUpperBound() ?
+                maxStringTruncateToValidRange(byteStringToSlice(stringStatistics.getUpperBoundBytes()), hiveWriterVersion) :
+                stringStatistics.hasMaximum() ?
+                        maxStringTruncateToValidRange(byteStringToSlice(stringStatistics.getMaximumBytes()), hiveWriterVersion) : null;
+        Slice minimum = stringStatistics.hasLowerBound() ?
+                minStringTruncateToValidRange(byteStringToSlice(stringStatistics.getLowerBoundBytes()), hiveWriterVersion) :
+                stringStatistics.hasMinimum() ?
+                        minStringTruncateToValidRange(byteStringToSlice(stringStatistics.getMinimumBytes()), hiveWriterVersion) : null;
         long sum = stringStatistics.hasSum() ? stringStatistics.getSum() : 0;
-        return new StringStatistics(minimum, maximum, sum);
+        return new StringStatistics(minimum, maximum, stringStatistics.hasLowerBound(), stringStatistics.hasUpperBound(), sum);
     }
 
     private static DecimalStatistics toDecimalStatistics(OrcProto.DecimalStatistics decimalStatistics)
     {
-        if (!decimalStatistics.hasMinimum() && !decimalStatistics.hasMaximum()) {
-            return null;
-        }
-
         BigDecimal minimum = decimalStatistics.hasMinimum() ? new BigDecimal(decimalStatistics.getMinimum()) : null;
         BigDecimal maximum = decimalStatistics.hasMaximum() ? new BigDecimal(decimalStatistics.getMaximum()) : null;
 
-        return new DecimalStatistics(minimum, maximum);
+        // could be long (16 bytes) or short (8 bytes); use short for estimation
+        return new DecimalStatistics(minimum, maximum, SHORT_DECIMAL_VALUE_BYTES);
     }
 
     private static BinaryStatistics toBinaryStatistics(OrcProto.BinaryStatistics binaryStatistics)
@@ -376,7 +389,11 @@ public class OrcMetadataReader
             return null;
         }
 
-        int index = findStringStatisticTruncationPosition(value, version);
+        if (version != ORIGINAL) {
+            return value;
+        }
+
+        int index = findStringStatisticTruncationPositionForOriginalOrcWriter(value);
         if (index == value.length()) {
             return value;
         }
@@ -393,7 +410,11 @@ public class OrcMetadataReader
             return null;
         }
 
-        int index = findStringStatisticTruncationPosition(value, version);
+        if (version != ORIGINAL) {
+            return value;
+        }
+
+        int index = findStringStatisticTruncationPositionForOriginalOrcWriter(value);
         if (index == value.length()) {
             return value;
         }
@@ -401,7 +422,7 @@ public class OrcMetadataReader
     }
 
     @VisibleForTesting
-    static int findStringStatisticTruncationPosition(Slice utf8, HiveWriterVersion version)
+    static int findStringStatisticTruncationPositionForOriginalOrcWriter(Slice utf8)
     {
         int length = utf8.length();
 
@@ -414,7 +435,7 @@ public class OrcMetadataReader
                 break;
             }
 
-            // Currently, all versions of the ORC writer round trip string min and max values through java.lang.String which
+            // The original ORC writers round trip string min and max values through java.lang.String which
             // replaces invalid UTF-8 sequences with the unicode replacement character.  This can cause the min value to be
             // greater than expected which can result in data sections being skipped instead of being processed. As a work around,
             // the string stats are truncated at the first replacement character.
@@ -441,7 +462,7 @@ public class OrcMetadataReader
             //   at the first occurrence of the surrogate character (to exclude the surrogate character)
             // * if a max string has a surrogate character, the max string is truncated
             //   at the first occurrence the surrogate character and 0xFF byte is appended to it.
-            if (version == ORIGINAL && codePoint >= MIN_SUPPLEMENTARY_CODE_POINT) {
+            if (codePoint >= MIN_SUPPLEMENTARY_CODE_POINT) {
                 break;
             }
 
@@ -453,10 +474,6 @@ public class OrcMetadataReader
     private static DateStatistics toDateStatistics(HiveWriterVersion hiveWriterVersion, OrcProto.DateStatistics dateStatistics, boolean isRowGroup)
     {
         if (hiveWriterVersion == ORIGINAL && !isRowGroup) {
-            return null;
-        }
-
-        if (!dateStatistics.hasMinimum() && !dateStatistics.hasMaximum()) {
             return null;
         }
 
@@ -477,12 +494,14 @@ public class OrcMetadataReader
             precision = Optional.of(type.getPrecision());
             scale = Optional.of(type.getScale());
         }
-        return new OrcType(toTypeKind(type.getKind()), type.getSubtypesList(), type.getFieldNamesList(), length, precision, scale);
+        return new OrcType(toTypeKind(type.getKind()), type.getSubtypesList(), type.getFieldNamesList(), length, precision, scale, toMap(type.getAttributesList()));
     }
 
     private static List<OrcType> toType(List<OrcProto.Type> types)
     {
-        return ImmutableList.copyOf(Iterables.transform(types, OrcMetadataReader::toType));
+        return types.stream()
+                .map(OrcMetadataReader::toType)
+                .collect(toImmutableList());
     }
 
     private static OrcTypeKind toTypeKind(OrcProto.Type.Kind typeKind)
@@ -529,6 +548,20 @@ public class OrcMetadataReader
         }
     }
 
+    // This method assumes type attributes have no duplicate key
+    private static Map<String, String> toMap(List<OrcProto.StringPair> attributes)
+    {
+        ImmutableMap.Builder<String, String> results = new ImmutableMap.Builder<>();
+        if (attributes != null) {
+            for (OrcProto.StringPair attribute : attributes) {
+                if (attribute.hasKey() && attribute.hasValue()) {
+                    results.put(attribute.getKey(), attribute.getValue());
+                }
+            }
+        }
+        return results.build();
+    }
+
     private static StreamKind toStreamKind(OrcProto.Stream.Kind streamKind)
     {
         switch (streamKind) {
@@ -548,6 +581,8 @@ public class OrcMetadataReader
                 return StreamKind.ROW_INDEX;
             case BLOOM_FILTER:
                 return StreamKind.BLOOM_FILTER;
+            case BLOOM_FILTER_UTF8:
+                return StreamKind.BLOOM_FILTER_UTF8;
             default:
                 throw new IllegalStateException(streamKind + " stream type not implemented yet");
         }
@@ -578,6 +613,10 @@ public class OrcMetadataReader
                 return ZLIB;
             case SNAPPY:
                 return SNAPPY;
+            case LZ4:
+                return LZ4;
+            case ZSTD:
+                return ZSTD;
             default:
                 throw new IllegalStateException(compression + " compression not implemented yet");
         }

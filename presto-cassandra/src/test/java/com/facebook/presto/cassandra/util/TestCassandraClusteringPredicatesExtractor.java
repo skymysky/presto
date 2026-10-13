@@ -13,21 +13,20 @@
  */
 package com.facebook.presto.cassandra.util;
 
-import com.datastax.driver.core.VersionNumber;
 import com.facebook.presto.cassandra.CassandraClusteringPredicatesExtractor;
 import com.facebook.presto.cassandra.CassandraColumnHandle;
 import com.facebook.presto.cassandra.CassandraTable;
 import com.facebook.presto.cassandra.CassandraTableHandle;
 import com.facebook.presto.cassandra.CassandraType;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ColumnHandle;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static org.testng.Assert.assertEquals;
 
 public class TestCassandraClusteringPredicatesExtractor
@@ -37,11 +36,10 @@ public class TestCassandraClusteringPredicatesExtractor
     private static CassandraColumnHandle col3;
     private static CassandraColumnHandle col4;
     private static CassandraTable cassandraTable;
-    private static VersionNumber cassandraVersion;
+    private static String cassandraVersion;
 
     @BeforeTest
     void setUp()
-            throws Exception
     {
         col1 = new CassandraColumnHandle("cassandra", "partitionKey1", 1, CassandraType.BIGINT, null, true, false, false, false);
         col2 = new CassandraColumnHandle("cassandra", "clusteringKey1", 2, CassandraType.BIGINT, null, false, true, false, false);
@@ -51,7 +49,7 @@ public class TestCassandraClusteringPredicatesExtractor
         cassandraTable = new CassandraTable(
                 new CassandraTableHandle("cassandra", "test", "records"), ImmutableList.of(col1, col2, col3, col4));
 
-        cassandraVersion = VersionNumber.parse("2.1.5");
+        cassandraVersion = "2.1.5";
     }
 
     @Test
@@ -77,5 +75,29 @@ public class TestCassandraClusteringPredicatesExtractor
         CassandraClusteringPredicatesExtractor predicatesExtractor = new CassandraClusteringPredicatesExtractor(cassandraTable.getClusteringKeyColumns(), tupleDomain, cassandraVersion);
         TupleDomain<ColumnHandle> unenforcedPredicates = TupleDomain.withColumnDomains(ImmutableMap.of(col4, Domain.singleValue(BIGINT, 26L)));
         assertEquals(predicatesExtractor.getUnenforcedConstraints(), unenforcedPredicates);
+    }
+
+    @Test
+    public void testInPredicatePushdownIsVersionGated()
+    {
+        // An IN restriction on a non-last clustering column (col2) is only pushed down on Cassandra 2.2+.
+        TupleDomain<ColumnHandle> tupleDomain = TupleDomain.withColumnDomains(
+                ImmutableMap.of(col2, Domain.multipleValues(BIGINT, ImmutableList.of(34L, 35L))));
+
+        // Prior to 2.2 the IN on a non-last clustering column is not pushed down.
+        assertEquals(predicates(tupleDomain, "2.1.5"), "");
+
+        // From 2.2 onwards it is pushed down.
+        assertEquals(predicates(tupleDomain, "2.2.0"), "\"clusteringKey1\" IN (34,35)");
+
+        // Regression: a lexicographic string comparison would treat "2.10" as older than "2.2" and skip
+        // the pushdown. Version-based comparison correctly recognizes 2.10 as newer than 2.2.
+        assertEquals(predicates(tupleDomain, "2.10.0"), "\"clusteringKey1\" IN (34,35)");
+    }
+
+    private String predicates(TupleDomain<ColumnHandle> tupleDomain, String version)
+    {
+        return new CassandraClusteringPredicatesExtractor(cassandraTable.getClusteringKeyColumns(), tupleDomain, version)
+                .getClusteringKeyPredicates();
     }
 }

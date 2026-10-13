@@ -36,7 +36,7 @@ This change comes at the cost of breaking existing queries that perform
 arithmetic operations directly on the ``BIGINT`` value returned from
 the date/time functions.
 
-As part of this work, we have also added the :func:`date_trunc` function
+As part of this work, we have also added the :func:`!date_trunc` function
 which is convenient for grouping data by a time span. For example, you
 can perform an aggregation by hour::
 
@@ -68,7 +68,7 @@ use the ``day`` unit instead::
     SELECT date_add('day', 1, TIMESTAMP '2014-03-08 09:00:00');
     -- 2014-03-09 09:00:00.000
 
-This works because the :func:`date_add` function treats the timestamp as
+This works because the :func:`!date_add` function treats the timestamp as
 list of fields, adds the value to the specified field and then rolls any
 overflow into the next higher field.
 
@@ -99,7 +99,7 @@ Both timestamps represent the same instant in time;
 they differ only in the time zone used to print them.
 
 The time zone of the session can be set on a per-query basis using the
-``X-Presto-Time-Zone`` HTTP header, or via the
+``X-Presto-Time-Zone`` HTTP header, or through the
 ``PrestoConnection.setTimeZoneId(String)`` method in the JDBC driver.
 
 Localization
@@ -108,7 +108,7 @@ Localization
 In addition to time zones, the language of the user is important when
 parsing and printing date/time types. This release adds localization
 support to the Presto engine and functions that require it:
-:func:`date_format` and :func:`date_parse`.
+:func:`!date_format` and :func:`!date_parse`.
 For example, if we set the language to Spanish::
 
     SELECT date_format(TIMESTAMP '2001-01-09 09:04', '%M'); -- enero
@@ -118,7 +118,7 @@ If we set the language to Japanese::
     SELECT date_format(TIMESTAMP '2001-01-09 09:04', '%M'); -- 1月
 
 The language of the session can be set on a per-query basis using the
-``X-Presto-Language`` HTTP header, or via the
+``X-Presto-Language`` HTTP header, or by using the
 ``PrestoConnection.setLocale(Locale)`` method in the JDBC driver.
 
 Optimizations

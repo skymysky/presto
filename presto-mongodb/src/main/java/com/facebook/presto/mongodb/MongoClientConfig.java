@@ -13,20 +13,25 @@
  */
 package com.facebook.presto.mongodb;
 
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigSecuritySensitive;
+import com.facebook.airlift.configuration.DefunctConfig;
+import com.facebook.airlift.configuration.LegacyConfig;
 import com.google.common.base.Splitter;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
-import io.airlift.configuration.Config;
-import io.airlift.configuration.DefunctConfig;
+import com.mongodb.Tag;
+import com.mongodb.TagSet;
+import jakarta.validation.constraints.AssertTrue;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
-import javax.validation.constraints.Size;
-
+import java.io.File;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.mongodb.MongoCredential.createCredential;
@@ -36,27 +41,112 @@ public class MongoClientConfig
 {
     private static final Splitter SPLITTER = Splitter.on(',').trimResults().omitEmptyStrings();
     private static final Splitter PORT_SPLITTER = Splitter.on(':').trimResults().omitEmptyStrings();
-    private static final Splitter USER_SPLITTER = Splitter.onPattern("[:@]").trimResults().omitEmptyStrings();
-
+    private static final Splitter TAGSET_SPLITTER = Splitter.on('&').trimResults().omitEmptyStrings();
+    private static final Splitter TAG_SPLITTER = Splitter.on(':').trimResults().omitEmptyStrings();
     private String schemaCollection = "_schema";
     private List<ServerAddress> seeds = ImmutableList.of();
-    private List<MongoCredential> credentials = ImmutableList.of();
+    private MongoCredential credential;
 
-    private int minConnectionsPerHost = 0;
+    private int minConnectionsPerHost;
     private int connectionsPerHost = 100;
     private int maxWaitTime = 120_000;
     private int connectionTimeout = 10_000;
-    private int socketTimeout = 0;
-    private boolean socketKeepAlive = false;
-    private boolean sslEnabled = false;
+    private int socketTimeout;
+    private boolean socketKeepAlive;
 
     // query configurations
-    private int cursorBatchSize = 0; // use driver default
+    private int cursorBatchSize; // use driver default
 
     private ReadPreferenceType readPreference = ReadPreferenceType.PRIMARY;
+    private List<TagSet> readPreferenceTagSets = ImmutableList.of();
     private WriteConcernType writeConcern = WriteConcernType.ACKNOWLEDGED;
     private String requiredReplicaSetName;
     private String implicitRowFieldPrefix = "_pos";
+    private boolean tlsEnabled;
+    private File keystorePath;
+    private String keystorePassword;
+    private File truststorePath;
+    private String truststorePassword;
+    private boolean caseSensitiveNameMatchingEnabled;
+
+    @AssertTrue(message = "'mongodb.tls.keystore-path', 'mongodb.tls.keystore-password', 'mongodb.tls.truststore-path' and 'mongodb.tls.truststore-password' must be empty when TLS is disabled")
+    public boolean isValidTlsConfig()
+    {
+        if (!tlsEnabled) {
+            return keystorePath == null && keystorePassword == null && truststorePath == null && truststorePassword == null;
+        }
+        // When TLS is enabled, validate keystore and truststore configurations
+        boolean validKeystore = (keystorePath == null && keystorePassword == null) ||
+                (keystorePath != null && keystorePassword != null);
+
+        boolean validTruststore = (truststorePath == null && truststorePassword == null) ||
+                (truststorePath != null && truststorePassword != null);
+
+        return validKeystore && validTruststore;
+    }
+
+    public boolean isTlsEnabled()
+    {
+        return this.tlsEnabled;
+    }
+
+    @Config("mongodb.tls.enabled")
+    @LegacyConfig("mongodb.ssl.enabled")
+    public MongoClientConfig setTlsEnabled(boolean tlsEnabled)
+    {
+        this.tlsEnabled = tlsEnabled;
+        return this;
+    }
+
+    public Optional<File> getKeystorePath()
+    {
+        return Optional.ofNullable(keystorePath);
+    }
+
+    @Config("mongodb.tls.keystore-path")
+    public MongoClientConfig setKeystorePath(File keystorePath)
+    {
+        this.keystorePath = keystorePath;
+        return this;
+    }
+
+    public Optional<String> getKeystorePassword()
+    {
+        return Optional.ofNullable(keystorePassword);
+    }
+
+    @Config("mongodb.tls.keystore-password")
+    @ConfigSecuritySensitive
+    public MongoClientConfig setKeystorePassword(String keystorePassword)
+    {
+        this.keystorePassword = keystorePassword;
+        return this;
+    }
+
+    public Optional<File> getTruststorePath()
+    {
+        return Optional.ofNullable(truststorePath);
+    }
+
+    @Config("mongodb.tls.truststore-path")
+    public MongoClientConfig setTruststorePath(File truststorePath)
+    {
+        this.truststorePath = truststorePath;
+        return this;
+    }
+
+    public Optional<String> getTruststorePassword()
+    {
+        return Optional.ofNullable(truststorePassword);
+    }
+
+    @Config("mongodb.tls.truststore-password")
+    @ConfigSecuritySensitive
+    public MongoClientConfig setTruststorePassword(String truststorePassword)
+    {
+        this.truststorePassword = truststorePassword;
+        return this;
+    }
 
     @NotNull
     public String getSchemaCollection()
@@ -91,23 +181,16 @@ public class MongoClientConfig
         return this;
     }
 
-    @NotNull
-    @Size(min = 0)
-    public List<MongoCredential> getCredentials()
+    public Optional<MongoCredential> getCredentials()
     {
-        return credentials;
+        return Optional.ofNullable(credential);
     }
 
     @Config("mongodb.credentials")
-    public MongoClientConfig setCredentials(String credentials)
+    @ConfigSecuritySensitive
+    public MongoClientConfig setCredentials(String credential)
     {
-        this.credentials = buildCredentials(SPLITTER.split(credentials));
-        return this;
-    }
-
-    public MongoClientConfig setCredentials(String... credentials)
-    {
-        this.credentials = buildCredentials(Arrays.asList(credentials));
+        this.credential = credential == null ? null : buildCredential(credential);
         return this;
     }
 
@@ -117,30 +200,31 @@ public class MongoClientConfig
         for (String hostPort : hostPorts) {
             List<String> values = PORT_SPLITTER.splitToList(hostPort);
             checkArgument(values.size() == 1 || values.size() == 2, "Invalid ServerAddress format. Requires host[:port]");
-            try {
-                if (values.size() == 1) {
-                    builder.add(new ServerAddress(values.get(0)));
-                }
-                else {
-                    builder.add(new ServerAddress(values.get(0), Integer.parseInt(values.get(1))));
-                }
+            if (values.size() == 1) {
+                builder.add(new ServerAddress(values.get(0)));
             }
-            catch (NumberFormatException e) {
-                throw Throwables.propagate(e);
+            else {
+                builder.add(new ServerAddress(values.get(0), Integer.parseInt(values.get(1))));
             }
         }
         return builder.build();
     }
 
-    private List<MongoCredential> buildCredentials(Iterable<String> userPasses)
+    private MongoCredential buildCredential(String userPass)
     {
-        ImmutableList.Builder<MongoCredential> builder = ImmutableList.builder();
-        for (String userPass : userPasses) {
-            List<String> values = USER_SPLITTER.splitToList(userPass);
-            checkArgument(values.size() == 3, "Invalid Credential format. Requires user:password@collection");
-            builder.add(createCredential(values.get(0), values.get(2), values.get(1).toCharArray()));
-        }
-        return builder.build();
+        checkArgument(!userPass.contains(","), "Multiple credentials are not supported. Configure a single credential in the format user:password@authenticationDatabase");
+
+        int atPos = userPass.lastIndexOf('@');
+        checkArgument(atPos > 0, "Invalid credential format. Required user:password@authenticationDatabase");
+        String userAndPassword = userPass.substring(0, atPos);
+        String authenticationDatabase = userPass.substring(atPos + 1);
+
+        int colonPos = userAndPassword.indexOf(':');
+        checkArgument(colonPos > 0, "Invalid credential format. Required user:password@authenticationDatabase");
+        String user = userAndPassword.substring(0, colonPos);
+        String password = userAndPassword.substring(colonPos + 1);
+
+        return createCredential(user, authenticationDatabase, password.toCharArray());
     }
 
     @Min(0)
@@ -232,6 +316,38 @@ public class MongoClientConfig
         return this;
     }
 
+    public List<TagSet> getReadPreferenceTags()
+    {
+        return readPreferenceTagSets;
+    }
+
+    @Config("mongodb.read-preference-tags")
+    public MongoClientConfig setReadPreferenceTags(String readPreferenceTags)
+    {
+        this.readPreferenceTagSets = buildTagSets(TAGSET_SPLITTER.split(readPreferenceTags));
+        return this;
+    }
+
+    private List<TagSet> buildTagSets(Iterable<String> tagSets)
+    {
+        ImmutableList.Builder<TagSet> builder = ImmutableList.builder();
+        for (String tagSet : tagSets) {
+            builder.add(new TagSet(buildTags(SPLITTER.split(tagSet))));
+        }
+        return builder.build();
+    }
+
+    private List<Tag> buildTags(Iterable<String> tags)
+    {
+        ImmutableList.Builder<Tag> builder = ImmutableList.builder();
+        for (String tag : tags) {
+            List<String> values = TAG_SPLITTER.splitToList(tag);
+            checkArgument(values.size() == 2, "Invalid Tag format. Requires tagName:tagValue");
+            builder.add(new Tag(values.get(0), values.get(1)));
+        }
+        return builder.build();
+    }
+
     public WriteConcernType getWriteConcern()
     {
         return writeConcern;
@@ -280,15 +396,15 @@ public class MongoClientConfig
         return this;
     }
 
-    public boolean getSslEnabled()
+    public boolean isCaseSensitiveNameMatchingEnabled()
     {
-        return this.sslEnabled;
+        return caseSensitiveNameMatchingEnabled;
     }
 
-    @Config("mongodb.ssl.enabled")
-    public MongoClientConfig setSslEnabled(boolean sslEnabled)
+    @Config("case-sensitive-name-matching")
+    public MongoClientConfig setCaseSensitiveNameMatchingEnabled(boolean caseSensitiveNameMatchingEnabled)
     {
-        this.sslEnabled = sslEnabled;
+        this.caseSensitiveNameMatchingEnabled = caseSensitiveNameMatchingEnabled;
         return this;
     }
 }

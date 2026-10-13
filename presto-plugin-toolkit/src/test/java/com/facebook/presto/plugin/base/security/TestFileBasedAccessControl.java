@@ -13,44 +13,47 @@
  */
 package com.facebook.presto.plugin.base.security;
 
+import com.facebook.presto.common.RuntimeStats;
+import com.facebook.presto.common.Subfield;
+import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.connector.ConnectorAccessControl;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
+import com.facebook.presto.spi.security.AccessControlContext;
 import com.facebook.presto.spi.security.AccessDeniedException;
-import com.facebook.presto.spi.security.Identity;
+import com.facebook.presto.spi.security.ConnectorIdentity;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import org.testng.Assert.ThrowingRunnable;
 import org.testng.annotations.Test;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.util.Collections;
 import java.util.Optional;
 
-import static io.airlift.json.JsonCodec.jsonCodec;
-import static org.testng.Assert.fail;
+import static com.facebook.presto.spi.testing.InterfaceTestUtils.assertAllMethodsOverridden;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.util.Files.newTemporaryFile;
+import static org.testng.Assert.assertThrows;
 
 public class TestFileBasedAccessControl
 {
     public static final ConnectorTransactionHandle TRANSACTION_HANDLE = new ConnectorTransactionHandle() {};
+    public static final AccessControlContext CONTEXT = new AccessControlContext(new QueryId("query_id"), Optional.empty(), Collections.emptySet(), Optional.empty(), WarningCollector.NOOP, new RuntimeStats(), Optional.empty(), Optional.empty(), Optional.empty());
 
     @Test
     public void testSchemaRules()
             throws IOException
     {
         ConnectorAccessControl accessControl = createAccessControl("schema.json");
-        accessControl.checkCanCreateTable(TRANSACTION_HANDLE, user("admin"), new SchemaTableName("test", "test"));
-        accessControl.checkCanCreateTable(TRANSACTION_HANDLE, user("bob"), new SchemaTableName("bob", "test"));
-        try {
-            accessControl.checkCanCreateTable(TRANSACTION_HANDLE, user("bob"), new SchemaTableName("test", "test"));
-            fail();
-        }
-        catch (AccessDeniedException e) {
-            // expected
-        }
-        try {
-            accessControl.checkCanCreateTable(TRANSACTION_HANDLE, user("admin"), new SchemaTableName("secret", "test"));
-            fail();
-        }
-        catch (AccessDeniedException e) {
-            // expected
-        }
+        accessControl.checkCanCreateTable(TRANSACTION_HANDLE, user("admin"), CONTEXT, new SchemaTableName("test", "test"));
+        accessControl.checkCanCreateTable(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bob", "test"));
+        assertDenied(() -> accessControl.checkCanCreateTable(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("test", "test")));
+        assertDenied(() -> accessControl.checkCanCreateTable(TRANSACTION_HANDLE, user("admin"), CONTEXT, new SchemaTableName("secret", "test")));
     }
 
     @Test
@@ -58,41 +61,61 @@ public class TestFileBasedAccessControl
             throws IOException
     {
         ConnectorAccessControl accessControl = createAccessControl("table.json");
-        accessControl.checkCanSelectFromTable(TRANSACTION_HANDLE, user("alice"), new SchemaTableName("test", "test"));
-        accessControl.checkCanSelectFromTable(TRANSACTION_HANDLE, user("alice"), new SchemaTableName("bobschema", "bobtable"));
-        accessControl.checkCanSelectFromTable(TRANSACTION_HANDLE, user("bob"), new SchemaTableName("bobschema", "bobtable"));
-        accessControl.checkCanInsertIntoTable(TRANSACTION_HANDLE, user("bob"), new SchemaTableName("bobschema", "bobtable"));
-        accessControl.checkCanDeleteFromTable(TRANSACTION_HANDLE, user("bob"), new SchemaTableName("bobschema", "bobtable"));
-        accessControl.checkCanCreateViewWithSelectFromTable(TRANSACTION_HANDLE, user("bob"), new SchemaTableName("bobschema", "bobtable"));
-        accessControl.checkCanDropTable(TRANSACTION_HANDLE, user("admin"), new SchemaTableName("bobschema", "bobtable"));
-        try {
-            accessControl.checkCanInsertIntoTable(TRANSACTION_HANDLE, user("alice"), new SchemaTableName("bobschema", "bobtable"));
-            fail();
-        }
-        catch (AccessDeniedException e) {
-            // expected
-        }
-        try {
-            accessControl.checkCanDropTable(TRANSACTION_HANDLE, user("bob"), new SchemaTableName("bobschema", "bobtable"));
-            fail();
-        }
-        catch (AccessDeniedException e) {
-            // expected
-        }
-        try {
-            accessControl.checkCanInsertIntoTable(TRANSACTION_HANDLE, user("bob"), new SchemaTableName("test", "test"));
-            fail();
-        }
-        catch (AccessDeniedException e) {
-            // expected
-        }
-        try {
-            accessControl.checkCanSelectFromTable(TRANSACTION_HANDLE, user("admin"), new SchemaTableName("secret", "secret"));
-            fail();
-        }
-        catch (AccessDeniedException e) {
-            // expected
-        }
+        accessControl.checkCanSelectFromColumns(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("test", "test"), ImmutableSet.of());
+        accessControl.checkCanSelectFromColumns(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("bobschema", "bobtable"), ImmutableSet.of());
+        accessControl.checkCanSelectFromColumns(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("bobschema", "bobtable"), ImmutableSet.of(new Subfield("bobcolumn")));
+        accessControl.checkCanSelectFromColumns(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bobschema", "bobtable"), ImmutableSet.of());
+        accessControl.checkCanInsertIntoTable(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bobschema", "bobtable"));
+        accessControl.checkCanDeleteFromTable(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bobschema", "bobtable"));
+        accessControl.checkCanSelectFromColumns(TRANSACTION_HANDLE, user("joe"), CONTEXT, new SchemaTableName("bobschema", "bobtable"), ImmutableSet.of());
+        accessControl.checkCanCreateViewWithSelectFromColumns(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bobschema", "bobtable"), ImmutableSet.of());
+        accessControl.checkCanRenameTable(TRANSACTION_HANDLE, user("admin"), CONTEXT, new SchemaTableName("bobschema", "bobtable"), new SchemaTableName("aliceschema", "newbobtable"));
+        accessControl.checkCanRenameTable(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("aliceschema", "alicetable"), new SchemaTableName("aliceschema", "newalicetable"));
+        accessControl.checkCanRenameView(TRANSACTION_HANDLE, user("admin"), CONTEXT, new SchemaTableName("bobschema", "bobview"), new SchemaTableName("aliceschema", "newbobview"));
+        accessControl.checkCanRenameView(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("aliceschema", "aliceview"), new SchemaTableName("aliceschema", "newaliceview"));
+        accessControl.checkCanDropTable(TRANSACTION_HANDLE, user("admin"), CONTEXT, new SchemaTableName("bobschema", "bobtable"));
+        assertDenied(() -> accessControl.checkCanRenameTable(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bobschema", "bobtable"), new SchemaTableName("bobschema", "newbobtable")));
+        accessControl.checkCanSetTableProperties(TRANSACTION_HANDLE, user("admin"), CONTEXT, new SchemaTableName("bobschema", "bobtable"), ImmutableMap.of());
+        accessControl.checkCanSetTableProperties(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("aliceschema", "alicetable"), ImmutableMap.of());
+        accessControl.checkCanAlterColumn(TRANSACTION_HANDLE, user("admin"), CONTEXT, new SchemaTableName("bobschema", "bobtable"));
+        assertDenied(() -> accessControl.checkCanInsertIntoTable(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("bobschema", "bobtable")));
+        assertDenied(() -> accessControl.checkCanDropTable(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bobschema", "bobtable")));
+        assertDenied(() -> accessControl.checkCanSetTableProperties(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bobschema", "bobtable"), ImmutableMap.of()));
+        assertDenied(() -> accessControl.checkCanInsertIntoTable(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("test", "test")));
+        assertDenied(() -> accessControl.checkCanSelectFromColumns(TRANSACTION_HANDLE, user("admin"), CONTEXT, new SchemaTableName("secret", "secret"), ImmutableSet.of()));
+        assertDenied(() -> accessControl.checkCanSelectFromColumns(TRANSACTION_HANDLE, user("joe"), CONTEXT, new SchemaTableName("secret", "secret"), ImmutableSet.of()));
+        assertDenied(() -> accessControl.checkCanCreateViewWithSelectFromColumns(TRANSACTION_HANDLE, user("joe"), CONTEXT, new SchemaTableName("bobschema", "bobtable"), ImmutableSet.of()));
+        assertDenied(() -> accessControl.checkCanRenameView(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bobschema", "bobview"), new SchemaTableName("bobschema", "newbobview")));
+        assertDenied(() -> accessControl.checkCanRenameView(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("aliceschema", "alicetable"), new SchemaTableName("bobschema", "newalicetable")));
+        assertDenied(() -> accessControl.checkCanAlterColumn(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("bobschema", "bobtable")));
+    }
+
+    @Test
+    public void testProcedureRules()
+            throws IOException
+    {
+        ConnectorAccessControl accessControl = createAccessControl("procedure.json");
+        accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("admin"), CONTEXT, new SchemaTableName("bobschema", "bobprocedure"));
+        accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("admin"), CONTEXT, new SchemaTableName("aliceschema", "aliceprocedure"));
+        accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("aliceschema", "aliceprocedure"));
+        accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bobschema", "bobprocedure"));
+        assertDenied(() -> accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("admin"), CONTEXT, new SchemaTableName("secret", "secretprocedure")));
+        assertDenied(() -> accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("test", "testprocedure")));
+        assertDenied(() -> accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("bobschema", "bobprocedure")));
+        assertDenied(() -> accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("alice"), CONTEXT, new SchemaTableName("secret", "secretprocedure")));
+        assertDenied(() -> accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("aliceschema", "aliceprocedure")));
+        assertDenied(() -> accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("secret", "secretprocedure")));
+        assertDenied(() -> accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("joe"), CONTEXT, new SchemaTableName("bobschema", "bobprocedure")));
+        assertDenied(() -> accessControl.checkCanCallProcedure(TRANSACTION_HANDLE, user("joe"), CONTEXT, new SchemaTableName("secret", "secretprocedure")));
+    }
+
+    @Test
+    public void testTableRulesForCheckCanTruncateTable()
+            throws IOException
+    {
+        ConnectorAccessControl accessControl = createAccessControl("table.json");
+        accessControl.checkCanTruncateTable(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bobschema", "bobtable"));
+        assertDenied(() -> accessControl.checkCanTruncateTable(TRANSACTION_HANDLE, user("bob"), CONTEXT, new SchemaTableName("bobschema", "test")));
     }
 
     @Test
@@ -100,44 +123,53 @@ public class TestFileBasedAccessControl
             throws IOException
     {
         ConnectorAccessControl accessControl = createAccessControl("session_property.json");
-        accessControl.checkCanSetCatalogSessionProperty(user("admin"), "dangerous");
-        accessControl.checkCanSetCatalogSessionProperty(user("alice"), "safe");
-        accessControl.checkCanSetCatalogSessionProperty(user("alice"), "unsafe");
-        accessControl.checkCanSetCatalogSessionProperty(user("bob"), "safe");
-        try {
-            accessControl.checkCanSetCatalogSessionProperty(user("bob"), "unsafe");
-            fail();
-        }
-        catch (AccessDeniedException e) {
-            // expected
-        }
-        try {
-            accessControl.checkCanSetCatalogSessionProperty(user("alice"), "dangerous");
-            fail();
-        }
-        catch (AccessDeniedException e) {
-            // expected
-        }
-        try {
-            accessControl.checkCanSetCatalogSessionProperty(user("charlie"), "safe");
-            fail();
-        }
-        catch (AccessDeniedException e) {
-            // expected
-        }
+        accessControl.checkCanSetCatalogSessionProperty(TRANSACTION_HANDLE, user("admin"), CONTEXT, "dangerous");
+        accessControl.checkCanSetCatalogSessionProperty(TRANSACTION_HANDLE, user("alice"), CONTEXT, "safe");
+        accessControl.checkCanSetCatalogSessionProperty(TRANSACTION_HANDLE, user("alice"), CONTEXT, "unsafe");
+        accessControl.checkCanSetCatalogSessionProperty(TRANSACTION_HANDLE, user("bob"), CONTEXT, "safe");
+        assertDenied(() -> accessControl.checkCanSetCatalogSessionProperty(TRANSACTION_HANDLE, user("bob"), CONTEXT, "unsafe"));
+        assertDenied(() -> accessControl.checkCanSetCatalogSessionProperty(TRANSACTION_HANDLE, user("alice"), CONTEXT, "dangerous"));
+        assertDenied(() -> accessControl.checkCanSetCatalogSessionProperty(TRANSACTION_HANDLE, user("charlie"), CONTEXT, "safe"));
     }
 
-    private static Identity user(String name)
+    @Test
+    public void testInvalidRules()
     {
-        return new Identity(name, Optional.empty());
+        assertThatThrownBy(() -> createAccessControl("invalid.json"))
+                .hasMessageContaining("Invalid JSON");
+    }
+
+    @Test
+    public void testEverythingImplemented()
+    {
+        assertAllMethodsOverridden(ConnectorAccessControl.class, FileBasedAccessControl.class);
+    }
+
+    private static ConnectorIdentity user(String name)
+    {
+        return new ConnectorIdentity(name, Optional.empty(), Optional.empty());
     }
 
     private ConnectorAccessControl createAccessControl(String fileName)
             throws IOException
     {
-        String path = this.getClass().getClassLoader().getResource(fileName).getPath();
         FileBasedAccessControlConfig config = new FileBasedAccessControlConfig();
-        config.setConfigFile(path);
-        return new FileBasedAccessControl(config, jsonCodec(AccessControlRules.class));
+        config.setConfigFile(getResourceFile(fileName).getPath());
+        return new FileBasedAccessControl(config);
+    }
+
+    private static File getResourceFile(String resourceName)
+            throws IOException
+    {
+        File resourceFile = newTemporaryFile();
+        resourceFile.deleteOnExit();
+        Files.copy(TestFileBasedAccessControl.class.getClassLoader().getResourceAsStream(resourceName), resourceFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+
+        return resourceFile;
+    }
+
+    private static void assertDenied(ThrowingRunnable runnable)
+    {
+        assertThrows(AccessDeniedException.class, runnable);
     }
 }
